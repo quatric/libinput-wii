@@ -69,4 +69,5 @@ void INPUT_Update(void)
     inpw_keyboard_update();
     inpw_mouse_update();
     inpw_pads_update();
+    inpw_cursor_update();
 }

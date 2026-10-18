@@ -67,6 +67,9 @@ INPUT_Shutdown();
   Nunchuk. Classic Controller, GameCube, Wii U Pro, GamePad and DualShock 3 are
   folded onto the Wii Remote layout.
 * Sticks are -1..1, y up, no deadzone; the strongest one across devices wins.
+* `INPUT_SetCursorMode(INPUT_CURSOR_IR | INPUT_CURSOR_MOUSE | INPUT_CURSOR_STICK)` picks
+  which devices drive the pointer cursor (`INPUT_CursorActive/Position/Moved`),
+  so the Wii pointer is optional per app. Draw your own cursor sprite.
 * `INPUT_Source()` names the device used last, handy for on-screen hints.
 * `INPUT_KeyboardMapSet/Clear` change the keyboard-as-controller mapping.
 

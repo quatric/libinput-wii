@@ -84,6 +84,25 @@ bool  INPUT_Pointer(float *x, float *y);
 /* Largest acceleration magnitude (in g) over all Wii Remotes. */
 float INPUT_Gforce(void);
 
+/* ---- Pointer cursor ----
+ * One on-screen cursor driven by the Wii Remote IR pointer and/or a USB
+ * mouse (and optionally the left stick). Hand-over between devices is
+ * smooth: when a remote points at the screen the mouse position follows it.
+ * Draw your own cursor sprite at INPUT_CursorPosition() while
+ * INPUT_CursorActive() is true. Which devices move it is an option. */
+#define INPUT_CURSOR_IR    (1u << 0) /* Wii Remote pointer */
+#define INPUT_CURSOR_MOUSE (1u << 1) /* USB mouse */
+#define INPUT_CURSOR_STICK (1u << 2) /* left analog stick (off by default) */
+
+/* Which devices drive the cursor. Default IR | MOUSE; 0 disables it. */
+void INPUT_SetCursorMode(u32 modes);
+u32  INPUT_GetCursorMode(void);
+bool INPUT_CursorActive(void);
+void INPUT_CursorPosition(int *x, int *y);
+/* True when the cursor moved more than a few pixels since the previous
+ * call to INPUT_Update() (IR jitter is ignored). */
+bool INPUT_CursorMoved(void);
+
 /* ---- Keyboard (USB HID usage codes, e.g. 0x28 = Enter) ---- */
 bool INPUT_KeyboardConnected(void);
 bool INPUT_KeyHeld(u8 keycode);      /* live state */

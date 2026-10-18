@@ -20,5 +20,6 @@ s32  inpw_mouse_init(void);
 void inpw_mouse_shutdown(void);
 void inpw_mouse_update(void);
 void inpw_mouse_set_bounds(int w, int h);
+void inpw_cursor_update(void);
 
 #endif
