@@ -76,6 +76,12 @@ const char *INPUT_Source(void);
  * applied). The strongest stick across all connected devices wins. Returns
  * the length; *src (optional) receives the device name. */
 float INPUT_Stick(int which, float *x, float *y, const char **src);
+/* The same stick before its length is clamped to 1 (still divided by the
+ * library's per-device range), so an app can apply its own scaling and
+ * clamping exactly. Returns the same length as INPUT_Stick(). The ranges:
+ * GameCube stick 70 and C-stick 60, Wii U Pro and GamePad 900, DualShock 3
+ * 110 from centre; Nunchuk and Classic sticks use wiiuse's magnitude. */
+float INPUT_StickRaw(int which, float *x, float *y, const char **src);
 
 /* ---- Wii Remote pointer / motion ---- */
 /* IR cursor in screen coordinates; false if no remote is pointing at the

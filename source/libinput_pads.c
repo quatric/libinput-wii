@@ -17,6 +17,7 @@
 
 typedef struct {
     float x, y, mag;
+    float raw_x, raw_y; /* before the length is clamped to 1 */
     const char *src;
 } stick_t;
 
@@ -34,6 +35,7 @@ static u32 ds3_previous;
 
 static void stick_feed(int which, const char *src, float x, float y)
 {
+    float raw_x = x, raw_y = y;
     float m = sqrtf(x * x + y * y);
     if (m > 1.0f) {
         x /= m;
@@ -44,6 +46,8 @@ static void stick_feed(int which, const char *src, float x, float y)
         sticks[which].x = x;
         sticks[which].y = y;
         sticks[which].mag = m;
+        sticks[which].raw_x = raw_x;
+        sticks[which].raw_y = raw_y;
         sticks[which].src = src;
     }
 }
@@ -252,7 +256,7 @@ void inpw_pads_set_screen(int w, int h)
 void inpw_pads_update(void)
 {
     pads_held = pads_down = 0;
-    sticks[0] = sticks[1] = (stick_t){ 0, 0, 0, "" };
+    sticks[0] = sticks[1] = (stick_t){ 0, 0, 0, 0, 0, "" };
     pointer_valid = false;
     gforce_max = 0;
 
@@ -362,6 +366,16 @@ float INPUT_Stick(int which, float *x, float *y, const char **src)
         which = 0;
     if (x) *x = sticks[which].x;
     if (y) *y = sticks[which].y;
+    if (src) *src = sticks[which].src ? sticks[which].src : "";
+    return sticks[which].mag;
+}
+
+float INPUT_StickRaw(int which, float *x, float *y, const char **src)
+{
+    if (which < 0 || which > 1)
+        which = 0;
+    if (x) *x = sticks[which].raw_x;
+    if (y) *y = sticks[which].raw_y;
     if (src) *src = sticks[which].src ? sticks[which].src : "";
     return sticks[which].mag;
 }

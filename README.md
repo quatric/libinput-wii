@@ -74,6 +74,7 @@ INPUT_Shutdown();
 * `INPUT_KeyboardMapSet/Clear` change the keyboard-as-controller mapping.
 * `INPUT_GameCubeMapSet/Clear` do the same for the GameCube pad.
 * `INPUT_IgnoreWiimoteButtons` leaves a channel's own Wii Remote buttons to another layer.
+* `INPUT_StickRaw` gives a stick before its length is clamped, for apps with their own scaling.
 
 ### Using it from an app
 
