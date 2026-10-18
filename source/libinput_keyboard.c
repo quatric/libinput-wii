@@ -69,7 +69,8 @@ static char key_char(u8 code, bool shift)
     return (c >= 0x20 && c < 0x7F) ? c : 0;
 }
 
-static void kb_event(USBKeyboard_event event)
+/* Runs on the scan thread, inside USBKeyboard_Scan(). */
+static void kb_event_locked(USBKeyboard_event event, bool *caps_changed)
 {
     u8 k = event.keyCode;
 
@@ -83,7 +84,7 @@ static void kb_event(USBKeyboard_event event)
 
         if (k == 0x39) { /* Caps Lock */
             caps = !caps;
-            USBKeyboard_SetLed(USBKEYBOARD_LEDCAPS, caps);
+            *caps_changed = true;
             return;
         }
         if (k >= 0xE0 && k <= 0xE7)
@@ -101,13 +102,38 @@ static void kb_event(USBKeyboard_event event)
         if (BIT_GET(live, k))
             BIT_SET(released_acc, k);
         BIT_CLR(live, k);
-    } else if (event.type == USBKEYBOARD_DISCONNECTED) {
-        for (int i = 0; i < 256; i++) {
-            if (BIT_GET(live, i))
-                BIT_SET(released_acc, i);
-        }
-        memset(live, 0, sizeof(live));
     }
+}
+
+/* Every held key is released when the keyboard goes away. */
+static void release_all_locked(void)
+{
+    for (int i = 0; i < 256; i++) {
+        if (BIT_GET(live, i))
+            BIT_SET(released_acc, i);
+    }
+    memset(live, 0, sizeof(live));
+}
+
+static volatile bool kbd_lost;
+
+static void kb_event(USBKeyboard_event event)
+{
+    bool caps_changed = false;
+
+    /* The disconnect event comes from an IPC callback, where a mutex cannot
+     * be taken; the scan thread releases the keys. */
+    if (event.type == USBKEYBOARD_DISCONNECTED) {
+        kbd_lost = true;
+        return;
+    }
+
+    LWP_MutexLock(kbd_lock);
+    kb_event_locked(event, &caps_changed);
+    LWP_MutexUnlock(kbd_lock);
+
+    if (caps_changed)
+        USBKeyboard_SetLed(USBKEYBOARD_LEDCAPS, caps);
 }
 
 static void *kbd_thread(void *arg)
@@ -115,7 +141,20 @@ static void *kbd_thread(void *arg)
     (void)arg;
 
     while (kbd_thread_should_run) {
-        if (!USBKeyboard_IsConnected() && USBKeyboard_Open(kb_event)) {
+        if (kbd_lost) {
+            kbd_lost = false;
+            LWP_MutexLock(kbd_lock);
+            release_all_locked();
+            LWP_MutexUnlock(kbd_lock);
+        }
+
+        if (!USBKeyboard_IsConnected()) {
+            /* Looking for a keyboard walks the USB device list through IOS, so
+             * only do it a few times a second. */
+            if (USBKeyboard_Open(kb_event) <= 0) {
+                usleep(250000);
+                continue;
+            }
             caps = false;
             for (int i = 0; i < 3; i++) {
                 USBKeyboard_SetLed(i, 1);
@@ -124,11 +163,14 @@ static void *kbd_thread(void *arg)
             }
         }
 
-        /* The callback runs inside Scan(), so lock around it. */
-        LWP_MutexLock(kbd_lock);
-        USBKeyboard_Scan();
-        LWP_MutexUnlock(kbd_lock);
-        usleep(400);
+        /* Scan() blocks in IOS until the keyboard sends its next report, so it
+         * must not run under kbd_lock: the frame loop takes that lock in
+         * inpw_keyboard_update() and INPUT_KeyPop(). kb_event() locks for each
+         * event instead. */
+        if (USBKeyboard_Scan() < 0)
+            usleep(10000);
+        else
+            usleep(400);
     }
 
     return NULL;
