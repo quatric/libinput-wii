@@ -10,11 +10,11 @@ static int delta_x, delta_y, delta_wheel;
 static u8 buttons_held, buttons_pressed, buttons_released;
 static int retry;
 
-s32 input_mouse_init(void)
+s32 inpw_mouse_init(void)
 {
     mouse_wanted = true;
-    bound_w = input_screen_w;
-    bound_h = input_screen_h;
+    bound_w = inpw_screen_w;
+    bound_h = inpw_screen_h;
     pos_x = bound_w / 2;
     pos_y = bound_h / 2;
     /* Not fatal if nothing is plugged in yet; update() keeps retrying. */
@@ -22,7 +22,7 @@ s32 input_mouse_init(void)
     return 0;
 }
 
-void input_mouse_shutdown(void)
+void inpw_mouse_shutdown(void)
 {
     if (!mouse_wanted)
         return;
@@ -36,7 +36,7 @@ static int clamp(int v, int lo, int hi)
     return v < lo ? lo : (v > hi ? hi : v);
 }
 
-void input_mouse_update(void)
+void inpw_mouse_update(void)
 {
     mouse_event ev;
     u8 prev = buttons_held;
@@ -73,7 +73,7 @@ void input_mouse_update(void)
     buttons_released = prev & ~buttons_held;
 
     if (delta_x || delta_y || delta_wheel || buttons_pressed)
-        input_set_source("Mouse");
+        inpw_set_source("Mouse");
 }
 
 bool INPUT_MouseConnected(void)
@@ -81,7 +81,7 @@ bool INPUT_MouseConnected(void)
     return mouse_wanted && MOUSE_IsConnected();
 }
 
-void input_mouse_set_bounds(int width, int height)
+void inpw_mouse_set_bounds(int width, int height)
 {
     bound_w = width;
     bound_h = height;

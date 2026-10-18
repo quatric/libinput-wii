@@ -116,7 +116,7 @@ static void feed(const char *src, u32 held, u32 down)
     pads_held |= held;
     pads_down |= down;
     if (down)
-        input_set_source(src);
+        inpw_set_source(src);
 }
 
 #ifdef HAVE_SICKSAXIS
@@ -159,7 +159,7 @@ static void poll_ds3(void)
 }
 #endif
 
-s32 input_pads_init(u32 flags)
+s32 inpw_pads_init(u32 flags)
 {
     PAD_Init();
 #ifdef HAVE_WUPC
@@ -168,7 +168,7 @@ s32 input_pads_init(u32 flags)
     WPAD_Init();
     WPAD_SetDataFormat(WPAD_CHAN_ALL,
                        (flags & INPUT_INIT_NO_POINTER) ? WPAD_FMT_BTNS : WPAD_FMT_BTNS_ACC_IR);
-    WPAD_SetVRes(WPAD_CHAN_ALL, input_screen_w, input_screen_h);
+    WPAD_SetVRes(WPAD_CHAN_ALL, inpw_screen_w, inpw_screen_h);
 #ifdef HAVE_WIIDRC
     WiiDRC_Init();
 #endif
@@ -182,7 +182,7 @@ s32 input_pads_init(u32 flags)
     return 0;
 }
 
-void input_pads_shutdown(void)
+void inpw_pads_shutdown(void)
 {
 #ifdef HAVE_SICKSAXIS
     if (ds3_initialized) {
@@ -198,12 +198,12 @@ void input_pads_shutdown(void)
     WPAD_Shutdown();
 }
 
-void input_pads_set_screen(int w, int h)
+void inpw_pads_set_screen(int w, int h)
 {
     WPAD_SetVRes(WPAD_CHAN_ALL, w, h);
 }
 
-void input_pads_update(void)
+void inpw_pads_update(void)
 {
     pads_held = pads_down = 0;
     sticks[0] = sticks[1] = (stick_t){ 0, 0, 0, "" };
@@ -290,10 +290,10 @@ void input_pads_update(void)
 
     for (int i = 0; i < 2; i++) {
         if (sticks[i].mag > STICK_ACTIVE)
-            input_set_source(sticks[i].src);
+            inpw_set_source(sticks[i].src);
     }
     if (pointer_valid)
-        input_set_source("Wiimote");
+        inpw_set_source("Wiimote");
 
     u32 kheld = INPUT_KeyboardPadHeld();
     u32 kdown = INPUT_KeyboardPadDown();

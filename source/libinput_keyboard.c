@@ -21,7 +21,7 @@ static input_key_event queue[QUEUE_LEN];
 static int q_head, q_tail;
 static bool caps;
 
-/* Snapshot published by input_keyboard_update(). */
+/* Snapshot published by inpw_keyboard_update(). */
 static u8 held[KEY_BYTES];
 static u8 pressed[KEY_BYTES];
 static u8 released[KEY_BYTES];
@@ -79,7 +79,7 @@ static void kb_event(USBKeyboard_event event)
         if (!fresh)
             return;
         BIT_SET(pressed_acc, k);
-        input_set_source("Keyboard");
+        inpw_set_source("Keyboard");
 
         if (k == 0x39) { /* Caps Lock */
             caps = !caps;
@@ -161,7 +161,7 @@ static void map_defaults(void)
     INPUT_KeyboardMapSet(0x4A, WPAD_BUTTON_HOME);  /* Home */
 }
 
-s32 input_keyboard_init(void)
+s32 inpw_keyboard_init(void)
 {
     if (kbd_initialized)
         return 0;
@@ -199,7 +199,7 @@ s32 input_keyboard_init(void)
     return 0;
 }
 
-void input_keyboard_shutdown(void)
+void inpw_keyboard_shutdown(void)
 {
     if (!kbd_initialized)
         return;
@@ -216,7 +216,7 @@ void input_keyboard_shutdown(void)
     kbd_initialized = false;
 }
 
-void input_keyboard_update(void)
+void inpw_keyboard_update(void)
 {
     if (!kbd_initialized)
         return;
