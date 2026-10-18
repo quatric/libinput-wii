@@ -9,6 +9,7 @@ static int pos_x = 320, pos_y = 240;
 static int delta_x, delta_y, delta_wheel;
 static u8 buttons_held, buttons_pressed, buttons_released;
 static int retry;
+static int speed = 1;
 
 s32 inpw_mouse_init(void)
 {
@@ -66,8 +67,8 @@ void inpw_mouse_update(void)
         buttons_held = ev.button & 7;
     }
 
-    pos_x = clamp(pos_x + delta_x, 0, bound_w - 1);
-    pos_y = clamp(pos_y + delta_y, 0, bound_h - 1);
+    pos_x = clamp(pos_x + delta_x * speed, 0, bound_w - 1);
+    pos_y = clamp(pos_y + delta_y * speed, 0, bound_h - 1);
 
     buttons_pressed = buttons_held & ~prev;
     buttons_released = prev & ~buttons_held;
@@ -93,6 +94,11 @@ void INPUT_MousePosition(int *x, int *y)
 {
     if (x) *x = pos_x;
     if (y) *y = pos_y;
+}
+
+void INPUT_MouseSetSpeed(int multiplier)
+{
+    speed = multiplier > 0 ? multiplier : 1;
 }
 
 void INPUT_MouseSetPosition(int x, int y)

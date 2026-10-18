@@ -8,7 +8,7 @@ USB keyboard and mouse input for the Nintendo Wii, built on libogc.
 - Background thread keeps the keyboard connected and scanned (hot-plug safe)
 - Per-frame polling: held / pressed / released for every USB HID key
 - Optional keyboard-to-Wii-Remote mapping (`INPUT_KeyboardPadHeld/Down`)
-- Mouse position (clamped to configurable bounds), deltas, wheel and buttons
+- Mouse position (clamped to configurable bounds, optional speed multiplier), deltas, wheel and buttons
 
 The keyboard handling was originally part of GlowWii and has been split out
 into a reusable library; mouse support is new.

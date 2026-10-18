@@ -139,6 +139,9 @@ bool INPUT_MouseConnected(void);
 /* Cursor position, clamped to the screen size. */
 void INPUT_MousePosition(int *x, int *y);
 void INPUT_MouseSetPosition(int x, int y);
+/* Multiply movement when updating the position (default 1). The delta
+ * reported by INPUT_MouseDelta() stays raw. */
+void INPUT_MouseSetSpeed(int multiplier);
 /* Movement and wheel (raw, positive = wheel toward the user) accumulated
  * since the last INPUT_Update(). */
 void INPUT_MouseDelta(int *dx, int *dy, int *wheel);
