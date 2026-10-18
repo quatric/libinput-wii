@@ -75,6 +75,15 @@ static u32 map_classic(u32 b)
     return out;
 }
 
+/* Core Wii Remote buttons left to another layer, per channel. */
+static u32 wiimote_ignored[4];
+
+void INPUT_IgnoreWiimoteButtons(int chan, u32 buttons)
+{
+    if (chan >= 0 && chan < 4)
+        wiimote_ignored[chan] = buttons & 0xFFFF;
+}
+
 /* GameCube pad bit -> WPAD_BUTTON_* (remappable). */
 static u32 gc_map[16];
 static bool gc_map_ready;
@@ -268,7 +277,8 @@ void inpw_pads_update(void)
             continue;
 
         u32 h = WPAD_ButtonsHeld(ch), d = WPAD_ButtonsDown(ch);
-        u32 core_h = h & 0xFFFF, core_d = d & 0xFFFF;
+        u32 core_h = h & 0xFFFF & ~wiimote_ignored[ch];
+        u32 core_d = d & 0xFFFF & ~wiimote_ignored[ch];
         u32 ext_h = h & 0xFFFF0000u, ext_d = d & 0xFFFF0000u;
         u32 xh = 0, xd = 0;
         const char *xsrc = "Wiimote";

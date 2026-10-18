@@ -140,6 +140,12 @@ u32  INPUT_KeyboardPadDown(void);
 void INPUT_GameCubeMapClear(void);
 void INPUT_GameCubeMapSet(u16 pad_buttons, u32 button);
 
+/* Leave some of a Wii Remote's own buttons (WPAD_BUTTON_*) on one channel
+ * (0-3) out of the button masks, for when another layer already handles
+ * them, such as SDL-wii turning channel 0's A and B into mouse buttons.
+ * Expansion controllers on that channel are unaffected. 0 restores them. */
+void INPUT_IgnoreWiimoteButtons(int chan, u32 buttons);
+
 /* ---- Mouse ---- */
 bool INPUT_MouseConnected(void);
 /* Cursor position, clamped to the screen size. */

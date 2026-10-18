@@ -73,6 +73,7 @@ INPUT_Shutdown();
 * `INPUT_Source()` names the device used last, handy for on-screen hints.
 * `INPUT_KeyboardMapSet/Clear` change the keyboard-as-controller mapping.
 * `INPUT_GameCubeMapSet/Clear` do the same for the GameCube pad.
+* `INPUT_IgnoreWiimoteButtons` leaves a channel's own Wii Remote buttons to another layer.
 
 ### Using it from an app
 
