@@ -1,4 +1,4 @@
-# libinput-wii
+# libwiiinput
 
 USB keyboard and mouse input for the Nintendo Wii, built on libogc.
 
@@ -82,12 +82,12 @@ Add it as a git submodule and compile its sources with your own flags, so the
 `HAVE_*` options apply to it too:
 
 ```sh
-git submodule add https://github.com/quatric/libinput-wii.git libinput-wii
+git submodule add https://github.com/quatric/libwiiinput.git libwiiinput
 ```
 
 ```make
-SOURCES  += libinput-wii/source
-CFLAGS   += -Ilibinput-wii/include
+SOURCES  += libwiiinput/source
+CFLAGS   += -Ilibwiiinput/include
 ```
 
 See `example/main.c` for a complete program.
