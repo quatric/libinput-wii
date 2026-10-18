@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <gccore.h>
+#include <wiiuse/wpad.h>
 #include <input_wii.h>
 
 int main(void)
@@ -15,22 +16,37 @@ int main(void)
     VIDEO_Flush();
 
     INPUT_Init();
-    INPUT_MouseSetBounds(rmode->fbWidth, rmode->xfbHeight);
+    INPUT_SetScreenSize(rmode->fbWidth, rmode->xfbHeight);
 
     while (1) {
         VIDEO_WaitVSync();
         INPUT_Update();
 
-        int x, y;
-        INPUT_MousePosition(&x, &y);
-        printf("\x1b[2J\x1b[2;0Hkbd:%d mouse:%d pos:%3d,%3d btn:%d\n",
-               INPUT_KeyboardConnected(), INPUT_MouseConnected(), x, y,
-               INPUT_MouseButtonsHeld());
+        float px = 0, py = 0, sx = 0, sy = 0;
+        int mx, my;
+        bool ir = INPUT_Pointer(&px, &py);
+        INPUT_Stick(INPUT_STICK_LEFT, &sx, &sy, NULL);
+        INPUT_MousePosition(&mx, &my);
 
-        if (INPUT_KeyPressed(0x29)) /* Esc */
+        printf("\x1b[2J\x1b[2;0H"
+               "source: %s\n"
+               "buttons: %08x\n"
+               "ir: %d (%.0f,%.0f)  stick: %.2f,%.2f\n"
+               "mouse: %d (%d,%d) btn %d\n"
+               "keyboard: %d\n",
+               INPUT_Source(), INPUT_ButtonsHeld(), ir, px, py, sx, sy,
+               INPUT_MouseConnected(), mx, my, INPUT_MouseButtonsHeld(),
+               INPUT_KeyboardConnected());
+
+        input_key_event ev;
+        while (INPUT_KeyPop(&ev))
+            if (ev.code == 0x29) /* Esc */
+                goto done;
+
+        if (INPUT_ButtonsDown() & WPAD_BUTTON_HOME)
             break;
     }
-
+done:
     INPUT_Shutdown();
     return 0;
 }

@@ -41,22 +41,47 @@ Link with `-linput-wii -lwiikeyboard -logc` (and the usual `-lwiiuse -lbte -lm`)
 #include <input_wii.h>
 
 INPUT_Init();
-INPUT_MouseSetBounds(640, 480);
+INPUT_SetScreenSize(640, 480);
 
 while (running) {
     VIDEO_WaitVSync();
-    INPUT_Update();                       /* once per frame */
+    INPUT_Update();                        /* once per frame */
 
-    u32 pressed = INPUT_ButtonsDown();   /* any controller or keyboard */
-    if (pressed & WPAD_BUTTON_A) { }
-    if (INPUT_KeyPressed(0x28)) { /* raw key: Enter */ }
+    u32 down = INPUT_ButtonsDown();        /* WPAD_BUTTON_* from any device */
+    if (down & WPAD_BUTTON_A) { }
 
-    int x, y;
-    INPUT_MousePosition(&x, &y);
-    if (INPUT_MouseButtonsPressed() & INPUT_MOUSE_LEFT) { /* click */ }
+    float x, y;
+    if (INPUT_Pointer(&x, &y)) { }         /* Wii Remote IR */
+    INPUT_Stick(INPUT_STICK_LEFT, &x, &y, NULL);
+
+    input_key_event ev;
+    while (INPUT_KeyPop(&ev)) { /* ev.ch is typed ASCII */ }
+
+    if (INPUT_MouseButtonsPressed() & INPUT_MOUSE_LEFT) { }
 }
 
 INPUT_Shutdown();
+```
+
+* Buttons are `WPAD_BUTTON_*` bits plus `INPUT_BUTTON_Z` / `INPUT_BUTTON_C` for the
+  Nunchuk. Classic Controller, GameCube, Wii U Pro, GamePad and DualShock 3 are
+  folded onto the Wii Remote layout.
+* Sticks are -1..1, y up, no deadzone; the strongest one across devices wins.
+* `INPUT_Source()` names the device used last, handy for on-screen hints.
+* `INPUT_KeyboardMapSet/Clear` change the keyboard-as-controller mapping.
+
+### Using it from an app
+
+Add it as a git submodule and compile its sources with your own flags, so the
+`HAVE_*` options apply to it too:
+
+```sh
+git submodule add https://github.com/quatric/libinput-wii.git libinput-wii
+```
+
+```make
+SOURCES  += libinput-wii/source
+CFLAGS   += -Ilibinput-wii/include
 ```
 
 See `example/main.c` for a complete program.

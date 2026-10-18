@@ -1,32 +1,34 @@
-#include "internal.h"
+#include "libinput_internal.h"
 #include <ogc/usbmouse.h>
 
-static bool mouse_initialized;
+#define RETRY_FRAMES 180
+
+static bool mouse_wanted;
 static int bound_w = 640, bound_h = 480;
 static int pos_x = 320, pos_y = 240;
 static int delta_x, delta_y, delta_wheel;
 static u8 buttons_held, buttons_pressed, buttons_released;
+static int retry;
 
 s32 input_mouse_init(void)
 {
-    if (mouse_initialized)
-        return 0;
-
-    s32 ret = MOUSE_Init();
-    if (ret < 0)
-        return ret;
-
-    mouse_initialized = true;
+    mouse_wanted = true;
+    bound_w = input_screen_w;
+    bound_h = input_screen_h;
+    pos_x = bound_w / 2;
+    pos_y = bound_h / 2;
+    /* Not fatal if nothing is plugged in yet; update() keeps retrying. */
+    MOUSE_Init();
     return 0;
 }
 
 void input_mouse_shutdown(void)
 {
-    if (!mouse_initialized)
+    if (!mouse_wanted)
         return;
 
     MOUSE_Deinit();
-    mouse_initialized = false;
+    mouse_wanted = false;
 }
 
 static int clamp(int v, int lo, int hi)
@@ -42,11 +44,22 @@ void input_mouse_update(void)
     delta_x = delta_y = delta_wheel = 0;
     buttons_pressed = buttons_released = 0;
 
-    if (!mouse_initialized)
+    if (!mouse_wanted)
         return;
 
+    if (!MOUSE_IsConnected()) {
+        buttons_held = 0;
+        buttons_released = prev;
+        if (++retry >= RETRY_FRAMES) {
+            retry = 0;
+            MOUSE_Init();
+        }
+        return;
+    }
+
     /* Drain everything queued since the last frame. */
-    while (MOUSE_GetEvent(&ev) > 0) {
+    int guard = 0;
+    while (guard++ < 64 && MOUSE_GetEvent(&ev) > 0) {
         delta_x += ev.rx;
         delta_y += ev.ry;
         delta_wheel += ev.rz;
@@ -58,17 +71,18 @@ void input_mouse_update(void)
 
     buttons_pressed = buttons_held & ~prev;
     buttons_released = prev & ~buttons_held;
+
+    if (delta_x || delta_y || delta_wheel || buttons_pressed)
+        input_set_source("Mouse");
 }
 
 bool INPUT_MouseConnected(void)
 {
-    return mouse_initialized && MOUSE_IsConnected();
+    return mouse_wanted && MOUSE_IsConnected();
 }
 
-void INPUT_MouseSetBounds(int width, int height)
+void input_mouse_set_bounds(int width, int height)
 {
-    if (width < 1 || height < 1)
-        return;
     bound_w = width;
     bound_h = height;
     pos_x = clamp(pos_x, 0, bound_w - 1);

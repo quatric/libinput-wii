@@ -8,10 +8,25 @@
 extern "C" {
 #endif
 
-/* Mouse button bits, as reported by INPUT_MouseButtons*() */
+/* ------------------------------------------------------------------------
+ * Buttons
+ *
+ * Every controller (Wii Remote, Nunchuk, Classic Controller, GameCube pad,
+ * Wii U Pro Controller, Wii U GamePad, DualShock 3) and the keyboard/mouse
+ * are folded into one mask of WPAD_BUTTON_* bits (include <wiiuse/wpad.h>).
+ * Two extras exist for the Nunchuk, which has no WPAD_BUTTON_* equivalent.
+ * ---------------------------------------------------------------------- */
+#define INPUT_BUTTON_Z (1u << 28) /* Nunchuk Z */
+#define INPUT_BUTTON_C (1u << 29) /* Nunchuk C */
+
+/* Mouse button bits */
 #define INPUT_MOUSE_LEFT   (1 << 0)
 #define INPUT_MOUSE_RIGHT  (1 << 1)
 #define INPUT_MOUSE_MIDDLE (1 << 2)
+
+/* Analog sticks */
+#define INPUT_STICK_LEFT  0
+#define INPUT_STICK_RIGHT 1
 
 /* Keyboard LEDs */
 typedef enum {
@@ -20,53 +35,94 @@ typedef enum {
     INPUT_LED_SCROLL
 } input_led;
 
-/* Initialize all input: GameCube pads, Wii Remotes (incl. Classic Controller),
- * and optional Wii U Pro Controller / Wii U GamePad / DualShock 3 support
- * (see HAVE_WUPC, HAVE_WIIDRC, HAVE_SICKSAXIS), plus USB keyboard and mouse.
- * Calls USB_Initialize(). Calls USB_Initialize() and
- * starts a background thread that keeps the keyboard connected and scanned.
- * Returns 0 on success, negative on failure. Safe to call twice. */
-s32 INPUT_Init(void);
+/* INPUT_InitEx() flags */
+#define INPUT_INIT_NO_POINTER  (1u << 0) /* skip Wii Remote IR (buttons only) */
+#define INPUT_INIT_NO_MOUSE    (1u << 1)
+#define INPUT_INIT_NO_KEYBOARD (1u << 2)
 
-/* Stop the background thread and release the USB devices. */
+/* Initialize everything: GameCube pads, Wii Remotes (incl. Nunchuk and
+ * Classic Controller), optional Wii U Pro Controller / Wii U GamePad /
+ * DualShock 3 (HAVE_WUPC, HAVE_WIIDRC, HAVE_SICKSAXIS), USB keyboard and
+ * USB mouse. Calls USB_Initialize(). Returns 0 on success, negative on
+ * failure. Safe to call twice. */
+s32 INPUT_Init(void);
+s32 INPUT_InitEx(u32 flags);
+
+/* Stop background work and release devices. */
 void INPUT_Shutdown(void);
 
-/* Snapshot input state. Call once per frame: INPUT_Key/Mouse*Pressed()
- * report events that happened since the previous call. */
+/* Screen size used for the Wii Remote IR pointer and mouse bounds
+ * (default 640x480). */
+void INPUT_SetScreenSize(int width, int height);
+
+/* Poll every device once. Call once per frame (or per poll). "Pressed" and
+ * "down" report what happened since the previous call. */
 void INPUT_Update(void);
 
-/* ---- Unified controller buttons (WPAD_BUTTON_* masks) ----
- * Every supported controller is normalised to Wii Remote buttons. The
- * *Buttons* variants also include the keyboard mapping. */
-u32 INPUT_PadsHeld(void);
+/* ---- Controller buttons (WPAD_BUTTON_* | INPUT_BUTTON_*) ---- */
+u32 INPUT_PadsHeld(void);     /* controllers only */
 u32 INPUT_PadsDown(void);
-u32 INPUT_ButtonsHeld(void);
+u32 INPUT_ButtonsHeld(void);  /* controllers + keyboard map + mouse map */
 u32 INPUT_ButtonsDown(void);
+u32 INPUT_ButtonsUp(void);
+
+/* Name of the device that most recently produced input ("Wiimote",
+ * "Nunchuk", "Classic", "GameCube", "Wii U Pro", "GamePad", "DualShock 3",
+ * "Keyboard", "Mouse"), or "" if nothing has been used yet. */
+const char *INPUT_Source(void);
+
+/* ---- Analog sticks ----
+ * x grows right, y grows up, range -1..1 (length clamped to 1, no deadzone
+ * applied). The strongest stick across all connected devices wins. Returns
+ * the length; *src (optional) receives the device name. */
+float INPUT_Stick(int which, float *x, float *y, const char **src);
+
+/* ---- Wii Remote pointer / motion ---- */
+/* IR cursor in screen coordinates; false if no remote is pointing at the
+ * screen. */
+bool  INPUT_Pointer(float *x, float *y);
+/* Largest acceleration magnitude (in g) over all Wii Remotes. */
+float INPUT_Gforce(void);
 
 /* ---- Keyboard (USB HID usage codes, e.g. 0x28 = Enter) ---- */
 bool INPUT_KeyboardConnected(void);
-bool INPUT_KeyHeld(u8 keycode);
-bool INPUT_KeyPressed(u8 keycode);
+bool INPUT_KeyHeld(u8 keycode);      /* live state */
+bool INPUT_KeyPressed(u8 keycode);   /* since the last INPUT_Update() */
 bool INPUT_KeyReleased(u8 keycode);
 s32  INPUT_KeyboardSetLed(input_led led, bool on);
 
-/* Map held / newly pressed keys to a WPAD_BUTTON_* mask so a keyboard can
- * stand in for a Wii Remote: arrows = D-pad, Enter = A, Backspace = B,
- * X = 1, Y = 2, Delete = -, Esc/Home = HOME. */
-u32 INPUT_KeyboardPadHeld(void);
-u32 INPUT_KeyboardPadDown(void);
+#define INPUT_MOD_SHIFT (1 << 0)
+#define INPUT_MOD_CTRL  (1 << 1)
+#define INPUT_MOD_ALT   (1 << 2)
+#define INPUT_MOD_GUI   (1 << 3)
+u8 INPUT_KeyModifiers(void);         /* live INPUT_MOD_* bits */
+
+typedef struct {
+    u8   code;   /* USB HID usage code */
+    char ch;     /* printable ASCII for the press (shift/caps aware), else 0 */
+    u8   mods;   /* INPUT_MOD_* held at the time of the press */
+} input_key_event;
+
+/* Pop the next key press (modifier keys alone are not reported). Returns
+ * false when the queue is empty. Holding a key does not repeat. */
+bool INPUT_KeyPop(input_key_event *ev);
+
+/* Keyboard-as-controller mapping. The default follows the Priiloader
+ * layout: arrows = D-pad, Enter = A, Backspace = B, X = 1, Y = 2,
+ * Delete = -, Esc/Home = HOME. */
+void INPUT_KeyboardMapClear(void);
+void INPUT_KeyboardMapSet(u8 keycode, u32 button);
+u32  INPUT_KeyboardPadHeld(void);
+u32  INPUT_KeyboardPadDown(void);
 
 /* ---- Mouse ---- */
 bool INPUT_MouseConnected(void);
-
-/* Bounds the cursor is clamped to (default 640x480). */
-void INPUT_MouseSetBounds(int width, int height);
+/* Cursor position, clamped to the screen size. */
 void INPUT_MousePosition(int *x, int *y);
 void INPUT_MouseSetPosition(int x, int y);
-
-/* Movement and wheel delta accumulated since the last INPUT_Update(). */
+/* Movement and wheel (raw, positive = wheel toward the user) accumulated
+ * since the last INPUT_Update(). */
 void INPUT_MouseDelta(int *dx, int *dy, int *wheel);
-
 u8   INPUT_MouseButtonsHeld(void);
 u8   INPUT_MouseButtonsPressed(void);
 u8   INPUT_MouseButtonsReleased(void);

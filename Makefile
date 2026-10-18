@@ -34,7 +34,7 @@ $(LIB): $(OBJS)
 	@mkdir -p lib
 	$(AR) rcs $@ $^
 
-build/%.o: source/%.c source/internal.h include/input_wii.h
+build/%.o: source/%.c source/libinput_internal.h include/input_wii.h
 	@mkdir -p build
 	$(CC) $(CFLAGS) -c $< -o $@
 
