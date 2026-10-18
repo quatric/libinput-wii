@@ -1,0 +1,99 @@
+#include "internal.h"
+#include <ogc/usbmouse.h>
+
+static bool mouse_initialized;
+static int bound_w = 640, bound_h = 480;
+static int pos_x = 320, pos_y = 240;
+static int delta_x, delta_y, delta_wheel;
+static u8 buttons_held, buttons_pressed, buttons_released;
+
+s32 input_mouse_init(void)
+{
+    if (mouse_initialized)
+        return 0;
+
+    s32 ret = MOUSE_Init();
+    if (ret < 0)
+        return ret;
+
+    mouse_initialized = true;
+    return 0;
+}
+
+void input_mouse_shutdown(void)
+{
+    if (!mouse_initialized)
+        return;
+
+    MOUSE_Deinit();
+    mouse_initialized = false;
+}
+
+static int clamp(int v, int lo, int hi)
+{
+    return v < lo ? lo : (v > hi ? hi : v);
+}
+
+void input_mouse_update(void)
+{
+    mouse_event ev;
+    u8 prev = buttons_held;
+
+    delta_x = delta_y = delta_wheel = 0;
+    buttons_pressed = buttons_released = 0;
+
+    if (!mouse_initialized)
+        return;
+
+    /* Drain everything queued since the last frame. */
+    while (MOUSE_GetEvent(&ev) > 0) {
+        delta_x += ev.rx;
+        delta_y += ev.ry;
+        delta_wheel += ev.rz;
+        buttons_held = ev.button & 7;
+    }
+
+    pos_x = clamp(pos_x + delta_x, 0, bound_w - 1);
+    pos_y = clamp(pos_y + delta_y, 0, bound_h - 1);
+
+    buttons_pressed = buttons_held & ~prev;
+    buttons_released = prev & ~buttons_held;
+}
+
+bool INPUT_MouseConnected(void)
+{
+    return mouse_initialized && MOUSE_IsConnected();
+}
+
+void INPUT_MouseSetBounds(int width, int height)
+{
+    if (width < 1 || height < 1)
+        return;
+    bound_w = width;
+    bound_h = height;
+    pos_x = clamp(pos_x, 0, bound_w - 1);
+    pos_y = clamp(pos_y, 0, bound_h - 1);
+}
+
+void INPUT_MousePosition(int *x, int *y)
+{
+    if (x) *x = pos_x;
+    if (y) *y = pos_y;
+}
+
+void INPUT_MouseSetPosition(int x, int y)
+{
+    pos_x = clamp(x, 0, bound_w - 1);
+    pos_y = clamp(y, 0, bound_h - 1);
+}
+
+void INPUT_MouseDelta(int *dx, int *dy, int *wheel)
+{
+    if (dx) *dx = delta_x;
+    if (dy) *dy = delta_y;
+    if (wheel) *wheel = delta_wheel;
+}
+
+u8 INPUT_MouseButtonsHeld(void)     { return buttons_held; }
+u8 INPUT_MouseButtonsPressed(void)  { return buttons_pressed; }
+u8 INPUT_MouseButtonsReleased(void) { return buttons_released; }
