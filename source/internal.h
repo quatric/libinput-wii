@@ -11,4 +11,8 @@ s32  input_mouse_init(void);
 void input_mouse_shutdown(void);
 void input_mouse_update(void);
 
+s32  input_pads_init(void);
+void input_pads_shutdown(void);
+void input_pads_update(void);
+
 #endif

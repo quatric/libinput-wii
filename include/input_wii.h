@@ -20,7 +20,10 @@ typedef enum {
     INPUT_LED_SCROLL
 } input_led;
 
-/* Initialize USB keyboard and mouse support. Calls USB_Initialize() and
+/* Initialize all input: GameCube pads, Wii Remotes (incl. Classic Controller),
+ * and optional Wii U Pro Controller / Wii U GamePad / DualShock 3 support
+ * (see HAVE_WUPC, HAVE_WIIDRC, HAVE_SICKSAXIS), plus USB keyboard and mouse.
+ * Calls USB_Initialize(). Calls USB_Initialize() and
  * starts a background thread that keeps the keyboard connected and scanned.
  * Returns 0 on success, negative on failure. Safe to call twice. */
 s32 INPUT_Init(void);
@@ -31,6 +34,14 @@ void INPUT_Shutdown(void);
 /* Snapshot input state. Call once per frame: INPUT_Key/Mouse*Pressed()
  * report events that happened since the previous call. */
 void INPUT_Update(void);
+
+/* ---- Unified controller buttons (WPAD_BUTTON_* masks) ----
+ * Every supported controller is normalised to Wii Remote buttons. The
+ * *Buttons* variants also include the keyboard mapping. */
+u32 INPUT_PadsHeld(void);
+u32 INPUT_PadsDown(void);
+u32 INPUT_ButtonsHeld(void);
+u32 INPUT_ButtonsDown(void);
 
 /* ---- Keyboard (USB HID usage codes, e.g. 0x28 = Enter) ---- */
 bool INPUT_KeyboardConnected(void);
