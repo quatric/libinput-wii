@@ -134,6 +134,12 @@ void INPUT_KeyboardMapSet(u8 keycode, u32 button);
 u32  INPUT_KeyboardPadHeld(void);
 u32  INPUT_KeyboardPadDown(void);
 
+/* GameCube-pad-as-controller mapping. The default: A, B, D-pad as named,
+ * X = 2, Y = 1, R / Z = +, L = -, Start = HOME. MapSet assigns every PAD_*
+ * bit in pad_buttons; a button of 0 unmaps them. */
+void INPUT_GameCubeMapClear(void);
+void INPUT_GameCubeMapSet(u16 pad_buttons, u32 button);
+
 /* ---- Mouse ---- */
 bool INPUT_MouseConnected(void);
 /* Cursor position, clamped to the screen size. */

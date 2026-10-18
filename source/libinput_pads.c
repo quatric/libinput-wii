@@ -1,5 +1,6 @@
 #include "libinput_internal.h"
 #include <math.h>
+#include <string.h>
 #include <ogc/pad.h>
 #include <wiiuse/wpad.h>
 #ifdef HAVE_WIIDRC
@@ -74,20 +75,56 @@ static u32 map_classic(u32 b)
     return out;
 }
 
+/* GameCube pad bit -> WPAD_BUTTON_* (remappable). */
+static u32 gc_map[16];
+static bool gc_map_ready;
+
+static void gc_map_set_bits(u32 pad_buttons, u32 button)
+{
+    for (int i = 0; i < 16; i++)
+        if (pad_buttons & (1u << i))
+            gc_map[i] = button;
+}
+
+static void gc_map_defaults(void)
+{
+    gc_map_ready = true;
+    memset(gc_map, 0, sizeof(gc_map));
+    gc_map_set_bits(PAD_TRIGGER_R | PAD_TRIGGER_Z, WPAD_BUTTON_PLUS);
+    gc_map_set_bits(PAD_TRIGGER_L, WPAD_BUTTON_MINUS);
+    gc_map_set_bits(PAD_BUTTON_A, WPAD_BUTTON_A);
+    gc_map_set_bits(PAD_BUTTON_B, WPAD_BUTTON_B);
+    gc_map_set_bits(PAD_BUTTON_X, WPAD_BUTTON_2);
+    gc_map_set_bits(PAD_BUTTON_Y, WPAD_BUTTON_1);
+    gc_map_set_bits(PAD_BUTTON_MENU, WPAD_BUTTON_HOME);
+    gc_map_set_bits(PAD_BUTTON_UP, WPAD_BUTTON_UP);
+    gc_map_set_bits(PAD_BUTTON_DOWN, WPAD_BUTTON_DOWN);
+    gc_map_set_bits(PAD_BUTTON_LEFT, WPAD_BUTTON_LEFT);
+    gc_map_set_bits(PAD_BUTTON_RIGHT, WPAD_BUTTON_RIGHT);
+}
+
+void INPUT_GameCubeMapClear(void)
+{
+    gc_map_ready = true;
+    memset(gc_map, 0, sizeof(gc_map));
+}
+
+void INPUT_GameCubeMapSet(u16 pad_buttons, u32 button)
+{
+    if (!gc_map_ready)
+        gc_map_defaults();
+    gc_map_set_bits(pad_buttons, button);
+}
+
 static u32 map_gc(u32 b)
 {
     u32 out = 0;
-    if (b & (PAD_TRIGGER_R | PAD_TRIGGER_Z)) out |= WPAD_BUTTON_PLUS;
-    if (b & PAD_TRIGGER_L)   out |= WPAD_BUTTON_MINUS;
-    if (b & PAD_BUTTON_A)    out |= WPAD_BUTTON_A;
-    if (b & PAD_BUTTON_B)    out |= WPAD_BUTTON_B;
-    if (b & PAD_BUTTON_X)    out |= WPAD_BUTTON_2;
-    if (b & PAD_BUTTON_Y)    out |= WPAD_BUTTON_1;
-    if (b & PAD_BUTTON_MENU) out |= WPAD_BUTTON_HOME;
-    if (b & PAD_BUTTON_UP)   out |= WPAD_BUTTON_UP;
-    if (b & PAD_BUTTON_DOWN) out |= WPAD_BUTTON_DOWN;
-    if (b & PAD_BUTTON_LEFT) out |= WPAD_BUTTON_LEFT;
-    if (b & PAD_BUTTON_RIGHT) out |= WPAD_BUTTON_RIGHT;
+
+    if (!gc_map_ready)
+        gc_map_defaults();
+    for (int i = 0; i < 16; i++)
+        if (b & (1u << i))
+            out |= gc_map[i];
     return out;
 }
 

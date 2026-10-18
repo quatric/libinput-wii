@@ -72,6 +72,7 @@ INPUT_Shutdown();
   so the Wii pointer is optional per app. Draw your own cursor sprite.
 * `INPUT_Source()` names the device used last, handy for on-screen hints.
 * `INPUT_KeyboardMapSet/Clear` change the keyboard-as-controller mapping.
+* `INPUT_GameCubeMapSet/Clear` do the same for the GameCube pad.
 
 ### Using it from an app
 
