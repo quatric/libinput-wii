@@ -1,14 +1,11 @@
 #include "libinput_internal.h"
 #include <ogc/usbmouse.h>
 
-#define RETRY_FRAMES 180
-
 static bool mouse_wanted;
 static int bound_w = 640, bound_h = 480;
 static int pos_x = 320, pos_y = 240;
 static int delta_x, delta_y, delta_wheel;
 static u8 buttons_held, buttons_pressed, buttons_released;
-static int retry;
 static int speed = 1;
 
 s32 inpw_mouse_init(void)
@@ -18,7 +15,7 @@ s32 inpw_mouse_init(void)
     bound_h = inpw_screen_h;
     pos_x = bound_w / 2;
     pos_y = bound_h / 2;
-    /* Not fatal if nothing is plugged in yet; update() keeps retrying. */
+    /* Not fatal if nothing is plugged in yet; libogc picks it up when it is plugged in later. */
     MOUSE_Init();
     return 0;
 }
@@ -51,10 +48,8 @@ void inpw_mouse_update(void)
     if (!MOUSE_IsConnected()) {
         buttons_held = 0;
         buttons_released = prev;
-        if (++retry >= RETRY_FRAMES) {
-            retry = 0;
-            MOUSE_Init();
-        }
+        /* libogc's mouse thread notices a plug-in by itself; calling MOUSE_Init again here
+         * restarted the USB scan every few seconds and stalled the app. */
         return;
     }
 
