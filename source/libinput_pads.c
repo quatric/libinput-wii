@@ -1,6 +1,7 @@
 #include "libinput_internal.h"
 #include <math.h>
 #include <string.h>
+#include <ogc/conf.h>
 #include <ogc/pad.h>
 #include <wiiuse/wpad.h>
 #ifdef HAVE_WIIDRC
@@ -209,6 +210,26 @@ static void poll_ds3(void)
 }
 #endif
 
+/* libogc's wiiuse maps the camera's 1024x768 view to the screen through a box sized for a 4:3
+ * screen (560x420) unless told otherwise, and libogc never tells it the console's 16:9 setting.
+ * On a widescreen TV the screen spans more of the camera's view, so the pointer ran ahead of the
+ * remote, further toward the edges. With the console set to 16:9, the pointer is taken from the
+ * smoothed position through wiiuse's own 16:9 box (660x370) and its sensor bar offset (the box's
+ * half height less 70, up for a bar above the screen, down for one below). */
+static bool widescreen;
+
+static bool point_16_9(const ir_t *ir, float *x, float *y)
+{
+    const float xs = 660.0f, ys = 370.0f;
+    const float offset_y = ir->pos == WIIUSE_IR_ABOVE ? ys / 2 - 70 : -ys / 2 + 70;
+    const float x0 = (1024 - xs) / 2, y0 = (768 - ys) / 2 + offset_y;
+    if (!ir->smooth_valid || ir->sx < x0 || ir->sx > x0 + xs || ir->sy < y0 || ir->sy > y0 + ys)
+        return false;
+    *x = (ir->sx - x0) / xs * inpw_screen_w;
+    *y = (ir->sy - y0) / ys * inpw_screen_h;
+    return true;
+}
+
 s32 inpw_pads_init(u32 flags)
 {
     PAD_Init();
@@ -219,6 +240,7 @@ s32 inpw_pads_init(u32 flags)
     WPAD_SetDataFormat(WPAD_CHAN_ALL,
                        (flags & INPUT_INIT_NO_POINTER) ? WPAD_FMT_BTNS : WPAD_FMT_BTNS_ACC_IR);
     WPAD_SetVRes(WPAD_CHAN_ALL, inpw_screen_w, inpw_screen_h);
+    widescreen = CONF_GetAspectRatio() == CONF_ASPECT_16_9;
 #ifdef HAVE_WIIDRC
     WiiDRC_Init();
 #endif
@@ -308,10 +330,13 @@ void inpw_pads_update(void)
         feed("Wiimote", core_h, core_d);
         feed(xsrc, xh, xd);
 
-        if (!pointer_valid && wd->ir.valid) {
-            pointer_valid = true;
-            pointer_x = wd->ir.x;
-            pointer_y = wd->ir.y;
+        if (!pointer_valid) {
+            float x, y;
+            if (widescreen ? point_16_9(&wd->ir, &x, &y) : wd->ir.valid) {
+                pointer_valid = true;
+                pointer_x = widescreen ? x : wd->ir.x;
+                pointer_y = widescreen ? y : wd->ir.y;
+            }
         }
 
         float g = sqrtf(wd->gforce.x * wd->gforce.x + wd->gforce.y * wd->gforce.y +
