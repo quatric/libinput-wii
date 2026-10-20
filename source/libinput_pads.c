@@ -32,6 +32,9 @@ static float pointer_x, pointer_y, gforce_max;
 static struct ss_device ds3;
 static bool ds3_initialized;
 static u32 ds3_previous;
+/* Opening the DS3 walks the USB device list through IOS: retry about every two seconds, not every frame. */
+#define DS3_RETRY_FRAMES 120
+static int ds3_retry;
 #endif
 
 static void stick_feed(int which, const char *src, float x, float y)
@@ -177,6 +180,9 @@ static void poll_ds3(void)
         return;
     if (!ss_is_connected(&ds3)) {
         ds3_previous = 0;
+        if (++ds3_retry < DS3_RETRY_FRAMES)
+            return;
+        ds3_retry = 0;
         if (ss_open(&ds3) > 0)
             ss_start_reading(&ds3);
         else
