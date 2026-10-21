@@ -8,6 +8,7 @@
 #include <gccore.h>
 #include <ogc/cache.h>
 #include <ogc/lwp.h>
+#include <ogc/lwp_watchdog.h>
 #include <ogc/mutex.h>
 #include <ogc/usb.h>
 
@@ -500,6 +501,7 @@ static s32 get(const hidp_field *f, const u8 *data, u32 len)
 
 static void finish(tb_sample *s)
 {
+	s->time = (u32)ticks_to_millisecs(gettime());
 	if (s->x < 0) s->x = 0;
 	if (s->y < 0) s->y = 0;
 	if (s->x > tb_dev.max_x) s->x = tb_dev.max_x;

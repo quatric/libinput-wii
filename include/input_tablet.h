@@ -50,6 +50,7 @@ typedef struct {
 	bool in_range;        /* the pen is near enough to be tracked */
 	bool eraser;          /* the pen is upside down */
 	u16 pad;              /* tablet buttons held, bit n = button n */
+	u32 time;             /* when the report arrived, in milliseconds */
 } tb_sample;
 
 /* Where the device scan and errors go, e.g. TB_SetLog(printf). */

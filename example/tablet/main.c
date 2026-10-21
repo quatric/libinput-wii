@@ -12,6 +12,9 @@
  *   Pen upper side switch                      eraser while held
  *   2                                          save to sd:/sketches/
  *   HOME                                       exit
+ *
+ * With the Wii on the network it also streams the driver's log and the pen
+ * state on TCP port 4301 (`nc <wii-ip> 4301`); sending "q" exits.
  */
 
 #include <stdarg.h>
@@ -20,9 +23,14 @@
 #include <string.h>
 #include <math.h>
 #include <sys/stat.h>
+#include <unistd.h>
+#include <poll.h>
 
 #include <gccore.h>
 #include <fat.h>
+#include <network.h>
+#include <ogc/lwp.h>
+#include <ogc/mutex.h>
 #include <wiiuse/wpad.h>
 
 #include <input_wii.h>
@@ -32,6 +40,15 @@
 #define BAR_H      54   /* the status bar, with the colour swatch under it */
 #define CURSOR_R   6
 #define MAX_SIZE   48
+/* A stroke is only joined to the sample before it when that came this
+ * recently and this near: further apart, a report was lost on the way (often
+ * the one saying the pen had left), and joining them would draw a stray line
+ * across the page.  The pen reports every 5-8 ms. */
+#define JOIN_MS    60
+#define JOIN_PX    100
+/* The tip switch can drop out for a report at light pressure; a stroke ends
+ * only after this many lifted reports in a row. */
+#define LIFT_REPORTS 2
 
 static GXRModeObj *rmode;
 static u32 *xfb;        /* what is on screen: YUYV, two pixels per word */
@@ -269,6 +286,147 @@ static void leave(void)
 	SYS_ResetSystem(SYS_RETURNTOMENU, 0, 0);
 }
 
+/* ---- network monitor ------------------------------------------------------- */
+
+#define MON_PORT 4301
+#define LOG_SIZE 16384
+
+static char log_buf[LOG_SIZE];
+static u32 log_len;
+static mutex_t log_lock = LWP_MUTEX_NULL;
+static volatile bool mon_quit;
+static u8 mon_stack[16384] ATTRIBUTE_ALIGN(32);
+
+/* The driver's log: kept for the monitor, which sends it to each client. */
+static int mon_log(const char *fmt, ...)
+{
+	va_list ap;
+	int n;
+
+	LWP_MutexLock(log_lock);
+	va_start(ap, fmt);
+	n = vsnprintf(log_buf + log_len, LOG_SIZE - log_len, fmt, ap);
+	va_end(ap);
+	if (n > 0)
+		log_len += (u32)n < LOG_SIZE - log_len ? (u32)n : LOG_SIZE - 1 - log_len;
+	LWP_MutexUnlock(log_lock);
+	return n;
+}
+
+static bool mon_send(s32 fd, const char *p, u32 len)
+{
+	while (len > 0) {
+		s32 n = net_send(fd, p, len > 4096 ? 4096 : len, 0);
+
+		if (n <= 0)
+			return false;
+		p += n;
+		len -= (u32)n;
+	}
+	return true;
+}
+
+/* A line of pen state and transfer counts, whenever it changes. */
+static int mon_status(char *out, int size)
+{
+	tb_sample s;
+	tb_stats st;
+	char hex[3 * 32 + 1] = "";
+	int i;
+
+	TB_GetState(&s);
+	TB_GetStats(&st);
+	for (i = 0; i < st.last_len && i < 32; i++)
+		sprintf(hex + i * 3, "%02x ", st.last[i]);
+	return snprintf(out, size,
+	                "%s range %d tip %d btn %x eraser %d x %d y %d p %u tilt %d,%d"
+	                " pad %04x | reports %u pen %u other %u err %u ret %d | %s\n",
+	                TB_Connected() ? "on " : "off", s.in_range,
+	                (s.buttons & TB_BUTTON_TIP) != 0, s.buttons, s.eraser,
+	                (int)s.x, (int)s.y, (unsigned)s.raw_pressure, s.tilt_x, s.tilt_y,
+	                s.pad, (unsigned)st.reports, (unsigned)st.pen_reports,
+	                (unsigned)st.other, (unsigned)st.errors, (int)st.last_ret, hex);
+}
+
+static void *mon_main(void *arg)
+{
+	struct sockaddr_in sa;
+	s32 sock;
+	int tries;
+
+	(void)arg;
+
+	for (tries = 0; net_gethostip() == 0 && tries < 3; tries++) {
+		char a[16] = "", m[16] = "", g[16] = "";
+
+		if_config(a, m, g, true, 20);
+	}
+	if (net_gethostip() == 0)
+		return NULL;
+
+	sock = net_socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
+	if (sock < 0)
+		return NULL;
+	memset(&sa, 0, sizeof(sa));
+	sa.sin_family = AF_INET;
+	sa.sin_port = htons(MON_PORT);
+	sa.sin_addr.s_addr = INADDR_ANY;
+	if (net_bind(sock, (struct sockaddr *)&sa, sizeof(sa)) < 0 ||
+	    net_listen(sock, 1) < 0) {
+		net_close(sock);
+		return NULL;
+	}
+	mon_log("monitor on port %d\n", MON_PORT);
+
+	while (!mon_quit) {
+		struct sockaddr_in peer;
+		socklen_t plen = sizeof(peer);
+		char last[512] = "", line[512];
+		u32 sent = 0;
+		s32 fd = net_accept(sock, (struct sockaddr *)&peer, &plen);
+
+		if (fd < 0) {
+			usleep(100 * 1000);
+			continue;
+		}
+
+		while (!mon_quit) {
+			struct pollsd pd = { fd, POLLIN, 0 };
+			bool ok = true;
+			int n;
+
+			/* New log text first, then the state if it moved. */
+			LWP_MutexLock(log_lock);
+			if (sent < log_len) {
+				ok = mon_send(fd, log_buf + sent, log_len - sent);
+				sent = log_len;
+			}
+			LWP_MutexUnlock(log_lock);
+
+			n = mon_status(line, sizeof(line));
+			if (ok && strcmp(line, last) != 0) {
+				ok = mon_send(fd, line, (u32)n);
+				strcpy(last, line);
+			}
+			if (!ok)
+				break;
+
+			if (net_poll(&pd, 1, 20) > 0 && (pd.revents & POLLIN)) {
+				char c[16];
+				s32 r = net_recv(fd, c, sizeof(c), 0);
+
+				if (r <= 0)
+					break;
+				if (memchr(c, 'q', (size_t)r))
+					mon_quit = true;
+			}
+		}
+		net_close(fd);
+	}
+	net_close(sock);
+	return NULL;
+}
+
 /* ---- main ---------------------------------------------------------------- */
 
 /* One status line, padded to the full width without wrapping (which would
@@ -331,6 +489,8 @@ int main(void)
 	tb_sample s, last = { 0 };
 	bool drawing = false;
 	float lx = 0, ly = 0, lr = 0;
+	u32 last_time = 0;
+	int lifted = 0;
 	u16 pad_prev = 0;
 	u8 btn_prev = 0;
 	char note[64] = "";
@@ -363,8 +523,15 @@ int main(void)
 	 * shows up as one, and steal half its reports. */
 	INPUT_InitEx(INPUT_INIT_NO_MOUSE);
 	INPUT_SetScreenSize(fb_w, fb_h);
+	LWP_MutexInit(&log_lock, false);
+	TB_SetLog(mon_log);
 	TB_Init();
 	sd_ok = fatInitDefault();
+	{
+		lwp_t mon;
+
+		LWP_CreateThread(&mon, mon_main, NULL, mon_stack, sizeof(mon_stack), 40);
+	}
 
 	while (1) {
 		u32 down;
@@ -374,14 +541,15 @@ int main(void)
 		INPUT_Update();
 		down = INPUT_ButtonsDown();
 
-		if (down & WPAD_BUTTON_HOME)
+		if ((down & WPAD_BUTTON_HOME) || mon_quit)
 			break;
 
 		while (TB_Pop(&s)) {
 			u16 pad_down = s.pad & ~pad_prev;
 			u8 btn_down = s.buttons & ~btn_prev;
 			bool erasing = s.eraser || (s.buttons & TB_BUTTON_BARREL2);
-			bool tip = s.in_range && (s.buttons & TB_BUTTON_TIP);
+			bool tip = s.in_range &&
+			           ((s.buttons & TB_BUTTON_TIP) || s.raw_pressure > 0);
 			int sx, sy;
 
 			pad_prev = s.pad;
@@ -405,16 +573,20 @@ int main(void)
 					r = 0.6f;
 				restore(cur_x, cur_y);
 				cur_x = -1;
-				if (drawing)
+				if (drawing && s.time - last_time <= JOIN_MS &&
+				    hypotf((float)sx - lx, (float)sy - ly) <= JOIN_PX)
 					segment(lx, ly, lr, (float)sx, (float)sy, r, c);
 				else
 					disc((float)sx, (float)sy, r, c);
 				lx = (float)sx;
 				ly = (float)sy;
 				lr = r;
+				last_time = s.time;
 				drawing = true;
-			} else {
+				lifted = 0;
+			} else if (drawing && (!s.in_range || ++lifted >= LIFT_REPORTS)) {
 				drawing = false;
+				lifted = 0;
 			}
 			last = s;
 			changed = true;
