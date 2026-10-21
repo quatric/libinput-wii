@@ -165,7 +165,8 @@ before returning to the loader, as `example/tablet` does.
 
 The descriptor parser (`source/libinput_hidparse.c`) has no libogc dependency and was checked on a
 computer against Wacom descriptors from the Linux kernel's HID selftests (PTH-460/660/860 and a
-CTL-style pen). The USB side has not yet been run against a real tablet.
+CTL-style pen). Tested on hardware with a Wacom Intuos S (CTL-4100): pen position, pressure and
+strokes all work.
 
 `example/tablet` is a pressure-sensitive painting program built on it: `make` there makes a
 `boot.dol` for the Homebrew Channel, with controls listed at the top of its `main.c`. Drawings save
