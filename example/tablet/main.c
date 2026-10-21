@@ -10,8 +10,10 @@
  *   Tablet key 3 / +                           thicker brush
  *   Tablet key 4 / 1                           clear
  *   Pen upper side switch                      eraser while held
+ *   Finger, on a Bamboo Pen & Touch            draws too
  *   2                                          save to sd:/sketches/
- *   HOME                                       exit
+ *   B                                          show the driver's log
+ *   HOME (or RESET on the console)             exit
  *
  * With the Wii on the network it also streams the driver's log and the pen
  * state on TCP port 4301 (`nc <wii-ip> 4301`); sending "q" exits.
@@ -31,6 +33,7 @@
 #include <network.h>
 #include <ogc/lwp.h>
 #include <ogc/mutex.h>
+#include <ogc/machine/processor.h>
 #include <wiiuse/wpad.h>
 
 #include <input_wii.h>
@@ -167,6 +170,15 @@ static void clear_canvas(void)
 		}
 }
 
+/* One stroke in progress; the pen and a finger each have their own, so the
+ * two are never joined into one line. */
+typedef struct {
+	bool drawing;
+	float x, y, r;
+	u32 time;
+	int lifted;
+} stroke;
+
 /* ---- cursor -------------------------------------------------------------- */
 
 static int cur_x = -1, cur_y = -1;
@@ -267,11 +279,88 @@ static int save_bmp(char *path, u32 size)
 #define STUB_ADDR  0x80001800
 #define STUB_MAGIC ((volatile u32 *)0x80001804)
 
+#define PI_INTSR   ((volatile u32 *)0xCC003000)
+#define PI_INTMR   ((volatile u32 *)0xCC003004)
+
+static bool stub_found(void)
+{
+	return (STUB_MAGIC[0] == 0x53545542 && STUB_MAGIC[1] == 0x48415858) ||
+	       (STUB_MAGIC[1] == 0x53545542 && STUB_MAGIC[2] == 0x48415858);
+}
+
+/* Into the Homebrew Channel's stub, with interrupts off at the processor and
+ * at their source so nothing still armed fires into this program once the
+ * stub has loaded over it. */
+static void __attribute__((noreturn)) jump_to_loader(void)
+{
+	u32 level;
+
+	_CPU_ISR_Disable(level);
+	(void)level;
+	*PI_INTMR = 0;
+	*PI_INTSR = 0xFFFFFFFF;
+	if (stub_found())
+		((void (*)(void))STUB_ADDR)();
+	_CPU_ISR_Restore(level);
+	SYS_ResetSystem(SYS_RETURNTOMENU, 0, 0);
+	while (1)
+		;
+}
+
+static u8 rescue_stack[4096] ATTRIBUTE_ALIGN(32);
+
+/* Started as leaving begins: if that is not done in four seconds -- a USB
+ * call stuck in IOS, a reload that stalls -- jump anyway. */
+static void *rescue_main(void *arg)
+{
+	(void)arg;
+	usleep(4000 * 1000);
+	jump_to_loader();
+	return NULL;
+}
+
+/* RESET on the console leaves and POWER turns the Wii off, from a thread of
+ * their own, so they work even with the main loop stuck. */
+static volatile bool want_reset, want_power;
+static u8 escape_stack[4096] ATTRIBUTE_ALIGN(32);
+
+static void reset_pressed(u32 irq, void *ctx)
+{
+	(void)irq;
+	(void)ctx;
+	want_reset = true;
+}
+
+static void power_pressed(void)
+{
+	want_power = true;
+}
+
+static void *escape_main(void *arg)
+{
+	lwp_t rescue;
+
+	(void)arg;
+	while (!want_reset && !want_power)
+		usleep(50 * 1000);
+	if (want_power)
+		SYS_ResetSystem(SYS_POWEROFF, 0, 0);
+	LWP_CreateThread(&rescue, rescue_main, NULL, rescue_stack,
+	                 sizeof(rescue_stack), LWP_PRIO_HIGHEST);
+	IOS_ReloadIOS(IOS_GetVersion());
+	jump_to_loader();
+	return NULL;
+}
+
 /* Reloading IOS first drops anything still queued in it (a tablet read
  * waits for as long as the pen is away), which would otherwise hold up the
  * Homebrew Channel's stub as it closes every descriptor. */
 static void leave(void)
 {
+	lwp_t rescue;
+
+	LWP_CreateThread(&rescue, rescue_main, NULL, rescue_stack,
+	                 sizeof(rescue_stack), LWP_PRIO_HIGHEST);
 	TB_Shutdown();
 	INPUT_Shutdown();
 	if (sd_ok)
@@ -280,10 +369,7 @@ static void leave(void)
 	VIDEO_Flush();
 	VIDEO_WaitVSync();
 	IOS_ReloadIOS(IOS_GetVersion());
-	if ((STUB_MAGIC[0] == 0x53545542 && STUB_MAGIC[1] == 0x48415858) ||
-	    (STUB_MAGIC[1] == 0x53545542 && STUB_MAGIC[2] == 0x48415858))
-		((void (*)(void))STUB_ADDR)();
-	SYS_ResetSystem(SYS_RETURNTOMENU, 0, 0);
+	jump_to_loader();
 }
 
 /* ---- network monitor ------------------------------------------------------- */
@@ -293,8 +379,10 @@ static void leave(void)
 
 static char log_buf[LOG_SIZE];
 static u32 log_len;
+static u32 log_cut;   /* bytes dropped from the front, in all */
 static mutex_t log_lock = LWP_MUTEX_NULL;
 static volatile bool mon_quit;
+static char net_state[40] = "net: starting";
 static u8 mon_stack[16384] ATTRIBUTE_ALIGN(32);
 
 /* The driver's log: kept for the monitor, which sends it to each client. */
@@ -304,6 +392,17 @@ static int mon_log(const char *fmt, ...)
 	int n;
 
 	LWP_MutexLock(log_lock);
+	/* Nearly full: keep the newer half, from a line start.  A monitor
+	 * client that had read past the cut gets the rest from the cut. */
+	if (log_len > LOG_SIZE - 256) {
+		u32 cut = log_len / 2;
+
+		while (cut < log_len && log_buf[cut - 1] != '\n')
+			cut++;
+		memmove(log_buf, log_buf + cut, log_len - cut);
+		log_len -= cut;
+		log_cut += cut;
+	}
 	va_start(ap, fmt);
 	n = vsnprintf(log_buf + log_len, LOG_SIZE - log_len, fmt, ap);
 	va_end(ap);
@@ -359,16 +458,23 @@ static void *mon_main(void *arg)
 	for (tries = 0; net_gethostip() == 0 && tries < 3; tries++) {
 		char a[16] = "", m[16] = "", g[16] = "";
 
-		mon_log("network: if_config %d\n", (int)if_config(a, m, g, true, 20));
+		s32 r;
+
+		snprintf(net_state, sizeof(net_state), "net: connecting (%d)", tries + 1);
+		r = if_config(a, m, g, true, 20);
+		mon_log("network: if_config %d\n", (int)r);
+		snprintf(net_state, sizeof(net_state), "net: if_config %d", (int)r);
 	}
 	if (net_gethostip() == 0) {
 		mon_log("network: no address\n");
+		snprintf(net_state, sizeof(net_state), "net: no address");
 		return NULL;
 	}
 
 	sock = net_socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
 	if (sock < 0) {
 		mon_log("network: socket %d\n", (int)sock);
+		snprintf(net_state, sizeof(net_state), "net: socket %d", (int)sock);
 		return NULL;
 	}
 	memset(&sa, 0, sizeof(sa));
@@ -377,6 +483,7 @@ static void *mon_main(void *arg)
 	sa.sin_addr.s_addr = INADDR_ANY;
 	if (net_bind(sock, (struct sockaddr *)&sa, sizeof(sa)) < 0 ||
 	    net_listen(sock, 1) < 0) {
+		snprintf(net_state, sizeof(net_state), "net: cannot listen");
 		net_close(sock);
 		return NULL;
 	}
@@ -386,13 +493,16 @@ static void *mon_main(void *arg)
 		mon_log("monitor on %u.%u.%u.%u:%d\n", (unsigned)(ip >> 24),
 		        (unsigned)((ip >> 16) & 0xFF), (unsigned)((ip >> 8) & 0xFF),
 		        (unsigned)(ip & 0xFF), MON_PORT);
+		snprintf(net_state, sizeof(net_state), "net: %u.%u.%u.%u:%d",
+		         (unsigned)(ip >> 24), (unsigned)((ip >> 16) & 0xFF),
+		         (unsigned)((ip >> 8) & 0xFF), (unsigned)(ip & 0xFF), MON_PORT);
 	}
 
 	while (!mon_quit) {
 		struct sockaddr_in peer;
 		socklen_t plen = sizeof(peer);
 		char last[512] = "", line[512];
-		u32 sent = 0;
+		u32 sent = 0, cut = log_cut; /* `sent` counts from the buffer's start */
 		s32 fd = net_accept(sock, (struct sockaddr *)&peer, &plen);
 
 		if (fd < 0) {
@@ -407,6 +517,10 @@ static void *mon_main(void *arg)
 
 			/* New log text first, then the state if it moved. */
 			LWP_MutexLock(log_lock);
+			if (log_cut != cut) {
+				sent = sent > log_cut - cut ? sent - (log_cut - cut) : 0;
+				cut = log_cut;
+			}
 			if (sent < log_len) {
 				ok = mon_send(fd, log_buf + sent, log_len - sent);
 				sent = log_len;
@@ -466,6 +580,60 @@ static void log_tail(void)
 	line(5, "%s", tail[1]);
 }
 
+/* The whole driver log over the canvas, its last lines that fit, until B is
+ * pressed again.  The console takes the whole screen for it and goes back to
+ * the status bar after. */
+static void show_log(void)
+{
+	static char copy[LOG_SIZE];
+	tb_sample drop;
+	int cols, rows, n = 0, col = 0;
+	u32 len, start;
+
+	CON_Init(xfb, 0, 0, fb_w, fb_h, fb_w * VI_DISPLAY_PIX_SZ);
+	CON_GetMetrics(&cols, &rows);
+
+	LWP_MutexLock(log_lock);
+	len = log_len;
+	memcpy(copy, log_buf, len);
+	LWP_MutexUnlock(log_lock);
+	copy[len] = '\0';
+
+	/* Back from the end to the start of the last rows - 2 lines. */
+	start = len;
+	while (start > 0 && n < rows - 2) {
+		start--;
+		if (copy[start] == '\n' && start + 1 < len)
+			n++;
+	}
+	if (start > 0)
+		start++;
+	printf("\x1b[1;0H Driver log (B to go back)\n");
+	for (; start < len; start++) {
+		/* Wrap nothing: a long line is cut at the screen's edge. */
+		if (copy[start] == '\n')
+			col = 0;
+		else if (++col >= cols - 1)
+			continue;
+		putchar(copy[start]);
+	}
+	fflush(stdout);
+
+	for (;;) {
+		VIDEO_WaitVSync();
+		INPUT_Update();
+		if (INPUT_ButtonsDown() & (WPAD_BUTTON_B | WPAD_BUTTON_HOME))
+			break;
+	}
+
+	/* What the pen did meanwhile was not seen being drawn; drop it. */
+	while (TB_Pop(&drop))
+		;
+	CON_Init(xfb, 0, 0, fb_w, TEXT_H, fb_w * VI_DISPLAY_PIX_SZ);
+	memcpy(xfb + BAR_H * words_per_row, canvas + BAR_H * words_per_row,
+	       (size_t)(fb_h - BAR_H) * words_per_row * 4);
+}
+
 /* ---- main ---------------------------------------------------------------- */
 
 /* One status line, padded to the full width without wrapping (which would
@@ -493,8 +661,9 @@ static void status(const tb_sample *s, const char *note)
 		sprintf(hex + i * 3, "%02x ", st.last[i]);
 
 	if (TB_GetInfo(&info))
-		line(1, " %s  %dx%d  pressure %u%s%s%s  if %u ep %02x/%u", info.name,
+		line(1, " %s  %dx%d  pressure %u%s%s%s%s  if %u ep %02x/%u", info.name,
 		     (int)info.max_x, (int)info.max_y, (unsigned)info.max_pressure,
+		     info.has_touch ? "  touch" : "",
 		     info.has_tilt ? "  tilt" : "", info.has_eraser ? "  eraser" : "",
 		     info.legacy ? "  (old protocol)" : "", info.interface,
 		     info.endpoint, info.max_packet);
@@ -502,19 +671,20 @@ static void status(const tb_sample *s, const char *note)
 		line(1, " No tablet -- plug one into a rear USB port");
 
 	line(2, " brush %d  pen %s %d,%d  %d%%  tilt %d,%d  keys %04x  %s", brush,
+	     s->finger ? (s->in_range ? "finger" : "lifted") :
 	     !s->in_range ? "away" : s->eraser ? "eraser" :
 	     (s->buttons & TB_BUTTON_TIP) ? "down" : "hover",
 	     (int)s->x, (int)s->y, (int)(s->pressure * 100), s->tilt_x, s->tilt_y,
 	     s->pad, note);
-	line(3, " reports %u  pen %u  other %u  errors %u (%d)  last: %s",
-	     (unsigned)st.reports, (unsigned)st.pen_reports, (unsigned)st.other,
+	line(3, " reports %u  pen %u  touch %u  other %u  errors %u (%d)  last: %s",
+	     (unsigned)st.reports, (unsigned)st.pen_reports,
+	     (unsigned)st.touch_reports, (unsigned)st.other,
 	     (unsigned)st.errors, (int)st.last_ret, hex);
-	line(4, " opens %u  protocol %d  mode set %d get %d (%02x)  first errors %d %d %d %d",
+	line(4, " opens %u  proto %d  mode %d/%d (%02x)  err %d %d %d  %s",
 	     (unsigned)st.opens, (int)st.proto_ret, (int)st.mode_set, (int)st.mode_get,
 	     st.mode_val, st.nfirst > 0 ? (int)st.first_err[0] : 0,
 	     st.nfirst > 1 ? (int)st.first_err[1] : 0,
-	     st.nfirst > 2 ? (int)st.first_err[2] : 0,
-	     st.nfirst > 3 ? (int)st.first_err[3] : 0);
+	     st.nfirst > 2 ? (int)st.first_err[2] : 0, net_state);
 	log_tail();
 }
 
@@ -533,11 +703,8 @@ static void swatch(void)
 
 int main(void)
 {
-	tb_sample s, last = { 0 };
-	bool drawing = false;
-	float lx = 0, ly = 0, lr = 0;
-	u32 last_time = 0;
-	int lifted = 0;
+	tb_sample s, last = { 0 }, last_pen = { 0 };
+	stroke strokes[2] = { { 0 } }; /* pen, finger */
 	u16 pad_prev = 0;
 	u8 btn_prev = 0;
 	char note[64] = "";
@@ -546,6 +713,15 @@ int main(void)
 	/* A fresh IOS, as the Homebrew Channel leaves its own network and USB
 	 * state behind; on it the network comes up reliably. */
 	IOS_ReloadIOS(IOS_GetVersion());
+
+	{
+		lwp_t esc;
+
+		SYS_SetResetCallback(reset_pressed);
+		SYS_SetPowerCallback(power_pressed);
+		LWP_CreateThread(&esc, escape_main, NULL, escape_stack,
+		                 sizeof(escape_stack), LWP_PRIO_HIGHEST - 1);
+	}
 
 	VIDEO_Init();
 	rmode = VIDEO_GetPreferredMode(NULL);
@@ -603,8 +779,13 @@ int main(void)
 			           ((s.buttons & TB_BUTTON_TIP) || s.raw_pressure > 0);
 			int sx, sy;
 
+			stroke *k = &strokes[s.finger ? 1 : 0];
+
 			pad_prev = s.pad;
-			btn_prev = s.buttons;
+			if (s.finger)
+				btn_down = 0; /* a finger has no side switches */
+			else
+				btn_prev = s.buttons;
 			if (pad_down & 1) cur_colour = (cur_colour + 1) % NCOLOURS;
 			if (pad_down & 2) brush = brush > 1 ? brush - 1 : 1;
 			if (pad_down & 4) brush = brush < MAX_SIZE ? brush + 1 : MAX_SIZE;
@@ -624,25 +805,32 @@ int main(void)
 					r = 0.6f;
 				restore(cur_x, cur_y);
 				cur_x = -1;
-				if (drawing && s.time - last_time <= JOIN_MS &&
-				    hypotf((float)sx - lx, (float)sy - ly) <= JOIN_PX)
-					segment(lx, ly, lr, (float)sx, (float)sy, r, c);
+				if (k->drawing && s.time - k->time <= JOIN_MS &&
+				    hypotf((float)sx - k->x, (float)sy - k->y) <= JOIN_PX)
+					segment(k->x, k->y, k->r, (float)sx, (float)sy, r, c);
 				else
 					disc((float)sx, (float)sy, r, c);
-				lx = (float)sx;
-				ly = (float)sy;
-				lr = r;
-				last_time = s.time;
-				drawing = true;
-				lifted = 0;
-			} else if (drawing && (!s.in_range || ++lifted >= LIFT_REPORTS)) {
-				drawing = false;
-				lifted = 0;
+				k->x = (float)sx;
+				k->y = (float)sy;
+				k->r = r;
+				k->time = s.time;
+				k->drawing = true;
+				k->lifted = 0;
+			} else if (k->drawing && (!s.in_range || ++k->lifted >= LIFT_REPORTS)) {
+				k->drawing = false;
+				k->lifted = 0;
 			}
 			last = s;
+			if (!s.finger)
+				last_pen = s;
 			changed = true;
 		}
 
+		if (down & WPAD_BUTTON_B) {
+			show_log();
+			cur_x = -1;
+			continue;
+		}
 		if (down & WPAD_BUTTON_A)     cur_colour = (cur_colour + 1) % NCOLOURS;
 		if (down & WPAD_BUTTON_MINUS) brush = brush > 1 ? brush - 1 : 1;
 		if (down & WPAD_BUTTON_PLUS)  brush = brush < MAX_SIZE ? brush + 1 : MAX_SIZE;
@@ -667,10 +855,11 @@ int main(void)
 
 			restore(cur_x, cur_y);
 			cur_x = -1;
-			if (last.in_range && !(last.buttons & TB_BUTTON_TIP)) {
-				TB_ToScreen(&last, fb_w, fb_h - BAR_H, &sx, &sy);
+			if (last_pen.in_range && !(last_pen.buttons & TB_BUTTON_TIP)) {
+				TB_ToScreen(&last_pen, fb_w, fb_h - BAR_H, &sx, &sy);
 				sy += BAR_H;
-				draw_cursor(sx, sy, last.eraser || (last.buttons & TB_BUTTON_BARREL2));
+				draw_cursor(sx, sy, last_pen.eraser ||
+				            (last_pen.buttons & TB_BUTTON_BARREL2));
 				cur_x = sx;
 				cur_y = sy;
 			}

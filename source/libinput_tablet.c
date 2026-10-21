@@ -45,8 +45,11 @@ static s32 tb_fd = -1;
 static bool tb_opened;
 static bool tb_oh0; /* opened through /dev/usb/oh0 rather than USBV5 */
 static int tb_last_count = -1;
+static s32 tb_pen_id; /* the pen interface's USBV5 device_id */
+static int tb_logged_count = -1;
 static volatile bool tb_unplugged;
 static volatile bool tb_running;
+static volatile bool tb_exited;  /* the worker has returned */
 
 static tb_info tb_dev;
 static hidp_desc tb_desc;
@@ -66,7 +69,13 @@ static u8 tb_stack[STACKSIZE] ATTRIBUTE_ALIGN(32);
 /* DMA buffers.  Static: a transfer that never completes may still land in
  * them after the device is gone. */
 static u8 tb_ctl[RDESC_MAX] ATTRIBUTE_ALIGN(32);
-static u8 tb_intr[INTR_MAX] ATTRIBUTE_ALIGN(32);
+static u8 tb_intr[2][INTR_MAX] ATTRIBUTE_ALIGN(32);
+
+/* The touch surface of a Bamboo Pen & Touch: a second interface, sending
+ * Wacom's fixed touch packets and the tablet's keys. */
+static u8 tb_touch_if, tb_touch_ep;
+static u16 tb_touch_pkt;
+static tb_finger tb_fingers[TB_MAX_FINGERS];
 
 static int (*tb_logger)(const char *fmt, ...);
 #define tb_log(...) (tb_logger ? (void)tb_logger(__VA_ARGS__) : (void)0)
@@ -79,7 +88,24 @@ typedef struct {
 	volatile s32 res;
 } tb_xfer;
 
-static tb_xfer tb_ctl_x, tb_intr_x;
+static tb_xfer tb_ctl_x;
+
+/* An interrupt IN pipe: the pen's, and the touch surface's where there is
+ * one.  Under oh0 both go through one handle, naming their endpoints; under
+ * USBV5 each interface is a device of its own, with its own handle. */
+typedef struct {
+	s32 fd;
+	u8 ep;
+	bool on;
+	bool own_fd;   /* opened apart from the pen's, so closed apart */
+	int fails;
+	tb_xfer x;
+	u8 *buf;
+} tb_pipe;
+
+#define PEN   0
+#define TOUCH 1
+static tb_pipe tb_pipes[2];
 
 static s32 tb_xfer_cb(s32 result, void *arg)
 {
@@ -328,6 +354,46 @@ static bool probe_iface(const tb_iface *ifc)
 	return false;
 }
 
+/* A Bamboo's touch interface.  Its descriptor gives the finger's range,
+ * else Linux's defaults for the two packet formats stand in: 20-byte
+ * packets on first-generation Pen & Touch tablets, 64-byte on later ones. */
+static void find_touch(const tb_iface *ifc)
+{
+	static hidp_desc d;
+	static u8 rdesc[RDESC_MAX];
+	u16 len = ifc->rdesc_len && ifc->rdesc_len <= RDESC_MAX ? ifc->rdesc_len : RDESC_MAX;
+	s32 ret;
+	int i;
+
+	tb_touch_if = ifc->number;
+	tb_touch_ep = ifc->ep;
+	tb_touch_pkt = ifc->max_packet;
+	tb_dev.has_touch = true;
+	tb_dev.touch_max_x = tb_touch_pkt >= 64 ? 4096 : 480;
+	tb_dev.touch_max_y = tb_dev.touch_max_x;
+
+	ret = tb_ctrl(REQTYPE_STD_IF_IN, USB_REQ_GETDESCRIPTOR, USB_DT_REPORT << 8,
+	              ifc->number, len, rdesc, 500);
+	if (ret > 0 && hidp_parse(rdesc, (u32)(ret > len ? len : ret), &d))
+		for (i = 0; i < d.nfields; i++) {
+			const hidp_field *f = &d.fields[i];
+
+			if (f->type != HIDP_INPUT || f->app == HIDP_GD_MOUSE ||
+			    f->logical_max <= 0)
+				continue;
+			if (f->usage == HIDP_GD_X)
+				tb_dev.touch_max_x = f->logical_max;
+			else if (f->usage == HIDP_GD_Y)
+				tb_dev.touch_max_y = f->logical_max;
+		}
+	memset(tb_fingers, 0, sizeof(tb_fingers));
+	(void)tb_ctrl(REQTYPE_CLASS_IF_OUT, USB_REQ_SETPROTOCOL, 1, ifc->number,
+	              0, NULL, 300);
+	tb_log("  touch: if %u ep %02x pkt %u, %dx%d (descriptor %d)\n", ifc->number,
+	       tb_touch_ep, tb_touch_pkt, (int)tb_dev.touch_max_x,
+	       (int)tb_dev.touch_max_y, (int)ret);
+}
+
 /* With a device open, decides whether it is a tablet and sets it up. */
 static bool probe_device(u16 vid, u16 pid)
 {
@@ -405,6 +471,13 @@ static bool probe_device(u16 vid, u16 pid)
 		tb_dev.has_eraser = tb_pen.eraser || tb_pen.invert;
 		tb_dev.pad_buttons = (u8)tb_pen.npad;
 	}
+	tb_dev.has_touch = false;
+	if (tb_dev.legacy)
+		for (i = 0; i < n; i++)
+			if (i != pick && ifaces[i].ep) {
+				find_touch(&ifaces[i]);
+				break;
+			}
 	if (tb_dev.max_x <= 0) tb_dev.max_x = 1;
 	if (tb_dev.max_y <= 0) tb_dev.max_y = 1;
 	if (tb_dev.max_pressure == 0) tb_dev.max_pressure = 1;
@@ -428,6 +501,121 @@ static bool probe_device(u16 vid, u16 pid)
 	       tb_dev.has_tilt ? ", tilt" : "", tb_dev.has_eraser ? ", eraser" : "",
 	       tb_dev.pad_buttons);
 	return true;
+}
+
+/* The interface a USBV5 list entry stands for, kept in its token. */
+static u8 entry_iface(const usb_device_entry *e)
+{
+	return (u8)(e->token >> 8);
+}
+
+/* The list entry standing for one interface of the device listed at
+ * list[at].  USBV5 lists a device once per interface, the interface number
+ * in its token, and in no fixed order: the CTH-460 comes up touch first.
+ * -1 when the interface has no entry of its own. */
+static int find_entry(const usb_device_entry *list, int count, int at, u8 iface)
+{
+	int i;
+
+	for (i = 0; i < count; i++)
+		if (list[i].vid == list[at].vid && list[i].pid == list[at].pid &&
+		    entry_iface(&list[i]) == iface)
+			return i;
+	return -1;
+}
+
+/* Opens the pipe to the touch interface, unless it is open already.  Under
+ * oh0 it shares the pen's handle; under USBV5 it is its own entry. */
+static void open_touch(const usb_device_entry *list, int count, int at)
+{
+	int pick;
+
+	if (tb_pipes[TOUCH].on)
+		return;
+	if (tb_oh0) {
+		tb_pipes[TOUCH].fd = tb_fd;
+		tb_pipes[TOUCH].ep = tb_touch_ep;
+		tb_pipes[TOUCH].on = true;
+		return;
+	}
+
+	pick = find_entry(list, count, at, tb_touch_if);
+	if (pick < 0) {
+		tb_log("  touch: no list entry for if %u\n", tb_touch_if);
+		return;
+	}
+	/* USBV5 reads an HID device's descriptors as it opens it, with no
+	 * deadline; said first, so a stall here shows in the log. */
+	tb_log("  touch: opening id %08x\n", (unsigned)list[pick].device_id);
+	if (USB_OpenDevice(list[pick].device_id, list[at].vid, list[at].pid,
+	                   &tb_pipes[TOUCH].fd) < 0) {
+		tb_log("  touch: open failed\n");
+		return;
+	}
+	tb_pipes[TOUCH].ep = tb_touch_ep;
+	tb_pipes[TOUCH].on = true;
+	tb_pipes[TOUCH].own_fd = true;
+}
+
+/* Under USBV5 an interrupt read goes to the interface its handle stands for,
+ * whatever endpoint it names, so the pen has to be read through the pen
+ * interface's own entry.  The device was probed through whichever entry came
+ * first; if that is the touch interface's, it becomes the touch pipe. */
+static void place_pipes(const usb_device_entry *list, int count, int at)
+{
+	int opened_if = tb_oh0 ? -1 : entry_iface(&list[at]);
+	int pe;
+
+	memset(tb_pipes, 0, sizeof(tb_pipes));
+	tb_pen_id = list[at].device_id;
+
+	if (!tb_oh0 && opened_if != tb_dev.interface &&
+	    (pe = find_entry(list, count, at, tb_dev.interface)) >= 0) {
+		s32 opened = tb_fd, pen_fd;
+
+		tb_log("  pen: opening id %08x (if %u)\n", (unsigned)list[pe].device_id,
+		       tb_dev.interface);
+		if (USB_OpenDevice(list[pe].device_id, list[at].vid, list[at].pid,
+		                   &pen_fd) >= 0) {
+			if (tb_dev.has_touch && opened_if == tb_touch_if) {
+				tb_pipes[TOUCH].fd = opened;
+				tb_pipes[TOUCH].ep = tb_touch_ep;
+				tb_pipes[TOUCH].on = true;
+				tb_pipes[TOUCH].own_fd = true;
+			} else
+				USB_CloseDevice(&opened);
+			tb_fd = pen_fd;
+			tb_pen_id = list[pe].device_id;
+		} else
+			tb_log("  pen: open failed, reading through id %08x\n",
+			       (unsigned)list[at].device_id);
+	}
+
+	tb_pipes[PEN].fd = tb_fd;
+	tb_pipes[PEN].ep = tb_ep;
+	tb_pipes[PEN].on = true;
+	if (tb_dev.has_touch)
+		open_touch(list, count, at);
+}
+
+/* Whether the pen's entry is still in the device list.  Opening a second
+ * entry of the same device makes IOS report a change, which libogc passes on
+ * as a removal of the first; a device that is still listed was not unplugged. */
+static bool still_listed(void)
+{
+	static usb_device_entry list[MAX_DEVICES] ATTRIBUTE_ALIGN(32);
+	u8 count = 0;
+	int i;
+
+	if (tb_oh0)
+		return false;
+	memset(list, 0, sizeof(list));
+	if (USB_GetDeviceList(list, MAX_DEVICES, USB_CLASS_HID, &count) < 0)
+		return false;
+	for (i = 0; i < count; i++)
+		if (list[i].device_id == tb_pen_id)
+			return true;
+	return false;
 }
 
 /* Opens each HID device in turn, keeping the first that is a tablet.
@@ -462,20 +650,27 @@ static s32 open_tablet(void)
 			continue;
 
 		tb_unplugged = false;
-		tb_log("  %04x:%04x id %08x (%s)\n", vid, pid, (unsigned)list[i].device_id,
-		       oh0 ? "oh0" : "usbv5");
+		/* Once per new device list: the scan repeats every second. */
+		if (count != tb_logged_count)
+			tb_log("  %04x:%04x id %08x token %08x (%s)\n", vid, pid,
+			       (unsigned)list[i].device_id, (unsigned)list[i].token,
+			       oh0 ? "oh0" : "usbv5");
 		if (USB_OpenDevice(oh0 ? USB_OH0_DEVICE_ID : list[i].device_id,
 		                   vid, pid, &tb_fd) < 0)
 			continue;
 
 		if (probe_device(vid, pid)) {
 			tb_opened = true;
+			place_pipes(list, count, i);
+			/* Only now: opening entries is what sets off false removals. */
+			tb_unplugged = false;
 			USB_DeviceRemovalNotifyAsync(tb_fd, tb_removed_cb, NULL);
 			return TB_OK;
 		}
 		USB_CloseDevice(&tb_fd);
 		tb_fd = -1;
 	}
+	tb_logged_count = count;
 	return TB_ENODEV;
 }
 
@@ -489,14 +684,18 @@ static void close_tablet(void)
 	 * touches the tablet -- so give it a moment and otherwise leave the
 	 * handle to the IOS reload that ends the app.  USBV5's close never
 	 * reaches IOS. */
-	if (tb_oh0 && tb_intr_x.pending && !tb_wait(&tb_intr_x, 50))
+	if (tb_oh0 && ((tb_pipes[PEN].x.pending && !tb_wait(&tb_pipes[PEN].x, 50)) ||
+	               (tb_pipes[TOUCH].x.pending && !tb_wait(&tb_pipes[TOUCH].x, 50))))
 		tb_log("  tablet left open: a read is outstanding\n");
-	else
+	else {
+		if (tb_pipes[TOUCH].own_fd)
+			USB_CloseDevice(&tb_pipes[TOUCH].fd);
 		USB_CloseDevice(&tb_fd);
+	}
 	tb_fd = -1;
 	tb_opened = false;
 	/* Whatever was outstanding belongs to the old device now. */
-	tb_intr_x.pending = false;
+	memset(tb_pipes, 0, sizeof(tb_pipes));
 	tb_ctl_x.pending = false;
 	tb_log("  tablet closed\n");
 }
@@ -508,7 +707,10 @@ static void push(const tb_sample *s)
 	u32 next;
 
 	LWP_MutexLock(tb_lock);
-	tb_state = *s;
+	if (s->finger)
+		tb_state.pad = s->pad;
+	else
+		tb_state = *s;
 	next = (tb_head + 1) & QUEUE_MASK;
 	if (next == tb_tail)
 		tb_tail = (tb_tail + 1) & QUEUE_MASK; /* drop the oldest */
@@ -630,6 +832,100 @@ static void hid_report(const u8 *r, u32 len)
 	push(&s);
 }
 
+static u16 be16(const u8 *p)
+{
+	return (u16)((p[0] << 8) | p[1]);
+}
+
+/* The tablet keys, in both touch formats: Linux's BTN_LEFT, BTN_FORWARD,
+ * BTN_BACK and BTN_RIGHT become keys 0-3. */
+static u16 bamboo_keys(u8 bits)
+{
+	return (u16)(((bits & 0x08) ? 1 : 0) | ((bits & 0x04) ? 2 : 0) |
+	             ((bits & 0x02) ? 4 : 0) | ((bits & 0x01) ? 8 : 0));
+}
+
+/* A Bamboo touch packet, report 2.  First-generation tablets send 20 bytes
+ * holding two finger slots and the keys; later ones up to seven 8-byte
+ * messages, each a finger (IDs 2-17) or the keys (ID 128). */
+static void touch_report(const u8 *r, u32 len)
+{
+	tb_sample s = tb_state;
+	bool pen_near = tb_state.in_range;
+	int i, first = -1;
+
+	if (len < 2 || r[0] != LEGACY_REPORT) {
+		tb_st.other++;
+		return;
+	}
+	tb_st.touch_reports++;
+
+	/* The endpoint's size says which format, when IOS reports it (it gave
+	 * the CTH-460's touch endpoint as 0); else the packet's length. */
+	if (tb_touch_pkt >= 64 || (tb_touch_pkt == 0 && len > 20)) {
+		int count = r[1] & 0x07;
+
+		for (i = 0; i < count && 2 + 8 * i + 8 <= (int)len; i++) {
+			const u8 *m = r + 2 + 8 * i;
+
+			if (m[0] >= 2 && m[0] < 2 + TB_MAX_FINGERS) {
+				tb_finger *f = &tb_fingers[m[0] - 2];
+
+				f->down = (m[1] & 0x80) != 0;
+				if (f->down) {
+					f->x = (m[2] << 4) | (m[4] >> 4);
+					f->y = (m[3] << 4) | (m[4] & 0x0F);
+				}
+			} else if (m[0] == 128)
+				s.pad = bamboo_keys(m[1]);
+		}
+	} else {
+		for (i = 0; i < 2; i++) {
+			int off = (r[1] & 0x80) ? 8 * i : 9 * i;
+			tb_finger *f = &tb_fingers[i];
+
+			if ((u32)off + 7 > len)
+				break;
+			f->down = (r[off + 3] & 0x80) != 0;
+			if (f->down) {
+				f->x = be16(r + off + 3) & 0x7FF;
+				f->y = be16(r + off + 5) & 0x7FF;
+			}
+		}
+		s.pad = bamboo_keys(r[1]);
+	}
+
+	for (i = 0; i < TB_MAX_FINGERS; i++) {
+		tb_finger *f = &tb_fingers[i];
+
+		/* A hand resting on the tablet while the pen draws is not input,
+		 * as the tablet's own driver has it. */
+		if (pen_near)
+			f->down = false;
+		/* The descriptor's range is a starting point; follow the fingers. */
+		if (f->x > tb_dev.touch_max_x) tb_dev.touch_max_x = f->x;
+		if (f->y > tb_dev.touch_max_y) tb_dev.touch_max_y = f->y;
+		f->nx = (float)f->x / (float)(tb_dev.touch_max_x ? tb_dev.touch_max_x : 1);
+		f->ny = (float)f->y / (float)(tb_dev.touch_max_y ? tb_dev.touch_max_y : 1);
+		if (f->down && first < 0)
+			first = i;
+	}
+
+	s.finger = true;
+	s.eraser = false;
+	s.tilt_x = s.tilt_y = 0;
+	s.buttons = first >= 0 ? TB_BUTTON_TIP : 0;
+	s.in_range = first >= 0;
+	if (first >= 0) {
+		s.x = (s32)(tb_fingers[first].nx * tb_dev.max_x);
+		s.y = (s32)(tb_fingers[first].ny * tb_dev.max_y);
+	}
+	s.raw_pressure = 0;
+	finish(&s);
+	s.pressure = first >= 0 ? 0.5f : 0.0f;
+	push(&s);
+}
+
 /* The first few distinct failure codes, which say more than the count. */
 static void note_error(s32 ret)
 {
@@ -644,98 +940,135 @@ static void note_error(s32 ret)
 	}
 }
 
+static bool pipe_submit(tb_pipe *p, int idx)
+{
+	s32 ret;
+
+	p->buf = tb_intr[idx];
+	memset(p->buf, 0, INTR_MAX);
+	DCFlushRange(p->buf, INTR_MAX);
+	p->x.done = false;
+	p->x.pending = true;
+	/* A full-speed interrupt packet is at most 64 bytes, so asking for that
+	 * much always fits whatever the tablet sends, whatever its endpoint
+	 * says. */
+	ret = USB_ReadIntrMsgAsync(p->fd, p->ep, INTR_MAX, p->buf, tb_xfer_cb, &p->x);
+	if (ret < 0) {
+		p->x.pending = false;
+		note_error(ret);
+		tb_st.errors++;
+		tb_st.last_ret = ret;
+		p->fails++;
+		return false;
+	}
+	return true;
+}
+
+/* Hands a finished read to its parser. */
+static void pipe_collect(tb_pipe *p, int idx)
+{
+	s32 ret = p->x.res;
+
+	p->x.pending = false;
+	tb_st.last_ret = ret;
+	if (ret < 0) {
+		note_error(ret);
+		tb_st.errors++;
+		p->fails++;
+		return;
+	}
+	p->fails = 0;
+	if (ret > INTR_MAX)
+		ret = INTR_MAX;
+	DCInvalidateRange(p->buf, INTR_MAX);
+
+	tb_st.reports++;
+	tb_st.last_len = (u8)ret;
+	tb_st.last_id = ret > 0 ? p->buf[0] : 0;
+	memcpy(tb_st.last, p->buf, (u32)ret);
+
+	if (idx == TOUCH)
+		touch_report(p->buf, (u32)ret);
+	else if (tb_dev.legacy)
+		legacy_report(p->buf, (u32)ret);
+	else
+		hid_report(p->buf, (u32)ret);
+}
+
 static void *tb_worker(void *arg)
 {
-	int fails = 0;
-
 	(void)arg;
 
 	while (tb_running) {
-		s32 ret;
+		bool waiting = false;
+		int i;
 
 		if (!tb_opened) {
 			int ms;
 
-			if (open_tablet() == TB_OK) {
-				fails = 0;
+			if (open_tablet() == TB_OK)
 				continue;
-			}
 			/* Nothing yet: look again in a second. */
 			for (ms = 0; ms < 1000 && tb_running; ms += 10)
 				usleep(10 * 1000);
 			continue;
 		}
 
-		/* About two seconds of nothing but failures: start over. */
-		if (tb_unplugged || fails >= 200) {
+		if (tb_unplugged && still_listed()) {
+			tb_log("  removal notice, but still listed\n");
+			tb_unplugged = false;
+			USB_DeviceRemovalNotifyAsync(tb_fd, tb_removed_cb, NULL);
+		}
+		/* Gone: close, and look for it again.  Failing reads are not a
+		 * reason to: a reopen abandons the reads in flight, and every one
+		 * keeps a piece of libogc's 16 KB USB heap until it completes. */
+		if (tb_unplugged) {
 			tb_sample s = tb_state;
 
 			close_tablet();
 			s.in_range = false;
 			s.buttons = 0;
 			s.pad = 0;
+			s.finger = false;
 			push(&s);
 			continue;
 		}
-
-		if (tb_intr_x.pending) {
-			/* A read from before is still out; wait it through. */
-			tb_wait(&tb_intr_x, 100);
-			continue;
+		if (tb_pipes[TOUCH].on && tb_pipes[TOUCH].fails >= 200 &&
+		    !tb_pipes[TOUCH].x.pending) {
+			tb_log("  touch: giving up on it\n");
+			tb_pipes[TOUCH].on = false;
 		}
 
-		memset(tb_intr, 0, sizeof(tb_intr));
-		DCFlushRange(tb_intr, sizeof(tb_intr));
-		tb_intr_x.done = false;
-		tb_intr_x.pending = true;
-		/* A full-speed interrupt packet is at most 64 bytes, so asking for
-		 * that much always fits whatever the tablet sends, whatever its
-		 * endpoint says. */
-		ret = USB_ReadIntrMsgAsync(tb_fd, tb_ep, INTR_MAX, tb_intr,
-		                           tb_xfer_cb, &tb_intr_x);
-		if (ret < 0) {
-			tb_intr_x.pending = false;
-			note_error(ret);
-			tb_st.errors++;
-			tb_st.last_ret = ret;
-			fails++;
-			usleep(10 * 1000);
-			continue;
-		}
+		for (i = 0; i < 2; i++) {
+			tb_pipe *p = &tb_pipes[i];
 
-		/* A pen out of range sends nothing, so no deadline here. */
-		while (tb_running && !tb_unplugged && !tb_intr_x.done)
+			if (p->on && !p->x.pending && !pipe_submit(p, i))
+				usleep(p->fails > 20 ? 100 * 1000 : 5 * 1000);
+			if (p->x.pending)
+				waiting = true;
+		}
+		if (!waiting)
+			continue;
+
+		/* Neither pen nor finger sends anything while away, so no
+		 * deadline: wait for whichever answers first. */
+		while (tb_running && !tb_unplugged && !(tb_pipes[PEN].x.pending && tb_pipes[PEN].x.done) &&
+		       !(tb_pipes[TOUCH].x.pending && tb_pipes[TOUCH].x.done))
 			usleep(1000);
-		if (!tb_intr_x.done)
-			continue;
-		tb_intr_x.pending = false;
 
-		ret = tb_intr_x.res;
-		tb_st.last_ret = ret;
-		if (ret < 0) {
-			note_error(ret);
-			tb_st.errors++;
-			fails++;
-			usleep(5 * 1000);
-			continue;
+		for (i = 0; i < 2; i++) {
+			tb_pipe *p = &tb_pipes[i];
+
+			if (p->x.pending && p->x.done) {
+				pipe_collect(p, i);
+				if (p->x.res < 0)
+					usleep(p->fails > 20 ? 100 * 1000 : 5 * 1000);
+			}
 		}
-		fails = 0;
-		if (ret > INTR_MAX)
-			ret = INTR_MAX;
-		DCInvalidateRange(tb_intr, sizeof(tb_intr));
-
-		tb_st.reports++;
-		tb_st.last_len = (u8)ret;
-		tb_st.last_id = ret > 0 ? tb_intr[0] : 0;
-		memcpy(tb_st.last, tb_intr, (u32)ret);
-
-		if (tb_dev.legacy)
-			legacy_report(tb_intr, (u32)ret);
-		else
-			hid_report(tb_intr, (u32)ret);
 	}
 
 	close_tablet();
+	tb_exited = true;
 	return NULL;
 }
 
@@ -755,6 +1088,7 @@ s32 TB_Init(void)
 	tb_head = tb_tail = 0;
 
 	tb_running = true;
+	tb_exited = false;
 	if (LWP_CreateThread(&tb_thread, tb_worker, NULL, tb_stack, STACKSIZE, 70) < 0) {
 		tb_running = false;
 		tb_thread = LWP_THREAD_NULL;
@@ -765,13 +1099,25 @@ s32 TB_Init(void)
 
 void TB_Shutdown(void)
 {
+	int ms;
+
 	if (!tb_running)
 		return;
 	tb_running = false;
-	if (tb_thread != LWP_THREAD_NULL) {
+	if (tb_thread == LWP_THREAD_NULL)
+		return;
+
+	/* The worker can be inside a libogc call with no deadline (opening a
+	 * USBV5 HID device reads its descriptors synchronously), and joining it
+	 * would then hang the caller.  Give it half a second; if it is still
+	 * stuck, leave it to the IOS reload that normally follows. */
+	for (ms = 0; ms < 500 && !tb_exited; ms += 10)
+		usleep(10 * 1000);
+	if (tb_exited)
 		LWP_JoinThread(tb_thread, NULL);
-		tb_thread = LWP_THREAD_NULL;
-	}
+	else
+		tb_log("  tablet thread did not stop\n");
+	tb_thread = LWP_THREAD_NULL;
 }
 
 bool TB_Connected(void)
@@ -828,6 +1174,18 @@ void TB_ToScreen(const tb_sample *s, int w, int h, int *x, int *y)
 	}
 	if (x) *x = (int)(((float)w - aw) / 2 + s->nx * (aw - 1));
 	if (y) *y = (int)(((float)h - ah) / 2 + s->ny * (ah - 1));
+}
+
+u32 TB_GetFingers(tb_finger *out, u32 max)
+{
+	u32 i, n = 0;
+
+	LWP_MutexLock(tb_lock);
+	for (i = 0; i < TB_MAX_FINGERS && n < max; i++)
+		if (tb_fingers[i].down && out)
+			out[n++] = tb_fingers[i];
+	LWP_MutexUnlock(tb_lock);
+	return n;
 }
 
 void TB_GetStats(tb_stats *out)

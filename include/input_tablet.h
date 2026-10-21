@@ -40,6 +40,8 @@ typedef struct {
 	bool has_eraser;
 	u8 pad_buttons;       /* buttons on the tablet itself */
 	bool legacy;          /* old fixed-format Wacom protocol */
+	bool has_touch;       /* a Bamboo Pen & Touch's touch surface */
+	s32 touch_max_x, touch_max_y;
 } tb_info;
 
 typedef struct {
@@ -53,7 +55,20 @@ typedef struct {
 	bool eraser;          /* the pen is upside down */
 	u16 pad;              /* tablet buttons held, bit n = button n */
 	u32 time;             /* when the report arrived, in milliseconds */
+	/* From the touch surface rather than the pen: in_range and
+	 * TB_BUTTON_TIP say a finger is down, x/y are the first finger's in
+	 * the pen's units, and pressure is a fixed 0.5.  Fingers are ignored
+	 * while the pen is in range. */
+	bool finger;
 } tb_sample;
+
+#define TB_MAX_FINGERS 4
+
+typedef struct {
+	bool down;
+	s32 x, y;             /* touch units, 0..touch_max_x / touch_max_y */
+	float nx, ny;         /* 0..1 */
+} tb_finger;
 
 /* Where the device scan and errors go, e.g. TB_SetLog(printf). */
 void TB_SetLog(int (*print)(const char *fmt, ...));
@@ -79,11 +94,15 @@ bool TB_Pop(tb_sample *out);
  * active area is centred, and a pen outside it gives an edge position. */
 void TB_ToScreen(const tb_sample *s, int w, int h, int *x, int *y);
 
+/* The fingers on a touch surface now, up to `max`; returns how many. */
+u32 TB_GetFingers(tb_finger *out, u32 max);
+
 /* ---- debugging ---------------------------------------------------------- */
 
 typedef struct {
 	u32 reports;     /* every interrupt transfer that came back */
 	u32 pen_reports;
+	u32 touch_reports;
 	u32 other;       /* reports that were neither pen nor pad */
 	u32 errors;
 	s32 last_ret;
