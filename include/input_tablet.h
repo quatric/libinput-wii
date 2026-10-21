@@ -31,6 +31,8 @@ typedef struct {
 	u16 vid, pid;
 	char name[48];        /* product string, or "VID:PID" */
 	u8 interface;
+	u8 endpoint;          /* interrupt IN endpoint, and its packet size */
+	u16 max_packet;
 	u8 report_id;         /* the pen's report */
 	s32 max_x, max_y;     /* coordinate range, from 0 */
 	u32 max_pressure;
@@ -88,6 +90,14 @@ typedef struct {
 	u8 last_id;
 	u8 last[64];     /* the last report, as received */
 	u8 last_len;
+	/* Kept from the latest open, and across reopens for the errors. */
+	s32 proto_ret;   /* SET_PROTOCOL */
+	s32 mode_set;    /* switching to tablet mode, where one is needed */
+	s32 mode_get;
+	u8 mode_val;     /* the mode read back */
+	s32 first_err[4];
+	u8 nfirst;
+	u32 opens;
 } tb_stats;
 
 void TB_GetStats(tb_stats *out);

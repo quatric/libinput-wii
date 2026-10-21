@@ -36,8 +36,8 @@
 #include <input_wii.h>
 #include <input_tablet.h>
 
-#define TEXT_H     48   /* three console lines of status */
-#define BAR_H      54   /* the status bar, with the colour swatch under it */
+#define TEXT_H     80   /* five console lines of status */
+#define BAR_H      86   /* the status bar, with the colour swatch under it */
 #define CURSOR_R   6
 #define MAX_SIZE   48
 /* A stroke is only joined to the sample before it when that came this
@@ -359,14 +359,18 @@ static void *mon_main(void *arg)
 	for (tries = 0; net_gethostip() == 0 && tries < 3; tries++) {
 		char a[16] = "", m[16] = "", g[16] = "";
 
-		if_config(a, m, g, true, 20);
+		mon_log("network: if_config %d\n", (int)if_config(a, m, g, true, 20));
 	}
-	if (net_gethostip() == 0)
+	if (net_gethostip() == 0) {
+		mon_log("network: no address\n");
 		return NULL;
+	}
 
 	sock = net_socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
-	if (sock < 0)
+	if (sock < 0) {
+		mon_log("network: socket %d\n", (int)sock);
 		return NULL;
+	}
 	memset(&sa, 0, sizeof(sa));
 	sa.sin_family = AF_INET;
 	sa.sin_port = htons(MON_PORT);
@@ -376,7 +380,13 @@ static void *mon_main(void *arg)
 		net_close(sock);
 		return NULL;
 	}
-	mon_log("monitor on port %d\n", MON_PORT);
+	{
+		u32 ip = net_gethostip();
+
+		mon_log("monitor on %u.%u.%u.%u:%d\n", (unsigned)(ip >> 24),
+		        (unsigned)((ip >> 16) & 0xFF), (unsigned)((ip >> 8) & 0xFF),
+		        (unsigned)(ip & 0xFF), MON_PORT);
+	}
 
 	while (!mon_quit) {
 		struct sockaddr_in peer;
@@ -427,6 +437,35 @@ static void *mon_main(void *arg)
 	return NULL;
 }
 
+static void line(int row, const char *fmt, ...);
+
+/* The driver log's last line, on status row 5. */
+static void log_tail(void)
+{
+	char tail[2][96] = { "", "" };
+	u32 end, start;
+	int row;
+
+	LWP_MutexLock(log_lock);
+	end = log_len;
+	for (row = 1; row >= 0 && end > 0; row--) {
+		u32 n;
+
+		while (end > 0 && log_buf[end - 1] == '\n')
+			end--;
+		start = end;
+		while (start > 0 && log_buf[start - 1] != '\n')
+			start--;
+		n = end - start < sizeof(tail[0]) - 1 ? end - start : sizeof(tail[0]) - 1;
+		memcpy(tail[row], log_buf + start, n);
+		tail[row][n] = '\0';
+		end = start;
+	}
+	LWP_MutexUnlock(log_lock);
+
+	line(5, "%s", tail[1]);
+}
+
 /* ---- main ---------------------------------------------------------------- */
 
 /* One status line, padded to the full width without wrapping (which would
@@ -454,10 +493,11 @@ static void status(const tb_sample *s, const char *note)
 		sprintf(hex + i * 3, "%02x ", st.last[i]);
 
 	if (TB_GetInfo(&info))
-		line(1, " %s  %dx%d  pressure %u%s%s%s", info.name, (int)info.max_x,
-		     (int)info.max_y, (unsigned)info.max_pressure,
+		line(1, " %s  %dx%d  pressure %u%s%s%s  if %u ep %02x/%u", info.name,
+		     (int)info.max_x, (int)info.max_y, (unsigned)info.max_pressure,
 		     info.has_tilt ? "  tilt" : "", info.has_eraser ? "  eraser" : "",
-		     info.legacy ? "  (old protocol)" : "");
+		     info.legacy ? "  (old protocol)" : "", info.interface,
+		     info.endpoint, info.max_packet);
 	else
 		line(1, " No tablet -- plug one into a rear USB port");
 
@@ -466,9 +506,16 @@ static void status(const tb_sample *s, const char *note)
 	     (s->buttons & TB_BUTTON_TIP) ? "down" : "hover",
 	     (int)s->x, (int)s->y, (int)(s->pressure * 100), s->tilt_x, s->tilt_y,
 	     s->pad, note);
-	line(3, " reports %u  pen %u  other %u  errors %u  last: %s",
+	line(3, " reports %u  pen %u  other %u  errors %u (%d)  last: %s",
 	     (unsigned)st.reports, (unsigned)st.pen_reports, (unsigned)st.other,
-	     (unsigned)st.errors, hex);
+	     (unsigned)st.errors, (int)st.last_ret, hex);
+	line(4, " opens %u  protocol %d  mode set %d get %d (%02x)  first errors %d %d %d %d",
+	     (unsigned)st.opens, (int)st.proto_ret, (int)st.mode_set, (int)st.mode_get,
+	     st.mode_val, st.nfirst > 0 ? (int)st.first_err[0] : 0,
+	     st.nfirst > 1 ? (int)st.first_err[1] : 0,
+	     st.nfirst > 2 ? (int)st.first_err[2] : 0,
+	     st.nfirst > 3 ? (int)st.first_err[3] : 0);
+	log_tail();
 }
 
 static void swatch(void)
@@ -495,6 +542,10 @@ int main(void)
 	u8 btn_prev = 0;
 	char note[64] = "";
 	int note_frames = 0;
+
+	/* A fresh IOS, as the Homebrew Channel leaves its own network and USB
+	 * state behind; on it the network comes up reliably. */
+	IOS_ReloadIOS(IOS_GetVersion());
 
 	VIDEO_Init();
 	rmode = VIDEO_GetPreferredMode(NULL);

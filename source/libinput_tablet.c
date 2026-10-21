@@ -44,6 +44,7 @@
 static s32 tb_fd = -1;
 static bool tb_opened;
 static bool tb_oh0; /* opened through /dev/usb/oh0 rather than USBV5 */
+static int tb_last_count = -1;
 static volatile bool tb_unplugged;
 static volatile bool tb_running;
 
@@ -220,8 +221,10 @@ static void read_name(u8 index, char *out, u32 size)
 
 	ret = tb_ctrl(0x80, USB_REQ_GETDESCRIPTOR, (USB_DT_STRING << 8) | index,
 	              0x0409, sizeof(buf), buf, 300);
-	if (ret < 4 || buf[1] != USB_DT_STRING)
+	if (ret < 4 || buf[1] != USB_DT_STRING) {
+		tb_log("  name string %u: %d\n", index, (int)ret);
 		return;
+	}
 	if (buf[0] < (u32)ret)
 		ret = buf[0];
 	for (i = 2; i + 1 < (u32)ret && n + 1 < size; i += 2) {
@@ -259,13 +262,18 @@ static void switch_mode(const tb_iface *ifc)
 			rep[0] = LEGACY_REPORT;
 			rep[1] = 2;
 			ret = set_feature(ifc->number, rep, 2);
+			tb_st.mode_set = ret;
+			tb_st.mode_get = 0;
 			if (ret >= 0) {
 				memset(rep, 0, 2);
 				ret = tb_ctrl(REQTYPE_CLASS_IF_IN, HID_GET_REPORT,
 				              (HID_FEATURE << 8) | LEGACY_REPORT,
 				              ifc->number, 2, rep, 300);
+				tb_st.mode_get = ret;
+				tb_st.mode_val = rep[1];
 			}
-			tb_log("  tablet mode: %d (%02x %02x)\n", (int)ret, rep[0], rep[1]);
+			tb_log("  tablet mode: set %d get %d (%02x %02x)\n",
+			       (int)tb_st.mode_set, (int)tb_st.mode_get, rep[0], rep[1]);
 			if (ret >= 2 && rep[1] == 2)
 				break;
 		}
@@ -332,8 +340,10 @@ static bool probe_device(u16 vid, u16 pid)
 
 	ret = tb_ctrl(0x80, USB_REQ_GETDESCRIPTOR, USB_DT_DEVICE << 8, 0,
 	              sizeof(dev), dev, 300);
-	if (ret < 18)
+	if (ret < 18) {
+		tb_log("  device descriptor: %d\n", (int)ret);
 		return false;
+	}
 	ret = tb_ctrl(0x80, USB_REQ_GETDESCRIPTOR, USB_DT_CONFIG << 8, 0, 9, cfg, 300);
 	if (ret < 9)
 		return false;
@@ -348,6 +358,10 @@ static bool probe_device(u16 vid, u16 pid)
 		total = (u16)ret;
 
 	n = list_hid_ifaces(cfg, total, ifaces, MAX_IFACES);
+	for (i = 0; i < n; i++)
+		tb_log("  if %u: class 3/%u/%u ep %02x pkt %u rdesc %u\n",
+		       ifaces[i].number, ifaces[i].subclass, ifaces[i].protocol,
+		       ifaces[i].ep, ifaces[i].max_packet, ifaces[i].rdesc_len);
 	if (n == 0)
 		return false;
 
@@ -373,8 +387,8 @@ static bool probe_device(u16 vid, u16 pid)
 	tb_dev.interface = ifaces[pick].number;
 	tb_ep = ifaces[pick].ep;
 	tb_max_packet = ifaces[pick].max_packet;
-	if (tb_max_packet == 0 || tb_max_packet > INTR_MAX)
-		tb_max_packet = INTR_MAX;
+	tb_dev.endpoint = tb_ep;
+	tb_dev.max_packet = tb_max_packet;
 
 	if (tb_dev.legacy) {
 		/* Intuos S/M ranges; grown if the pen goes further. */
@@ -401,12 +415,15 @@ static bool probe_device(u16 vid, u16 pid)
 		       " too -- INPUT_InitEx(INPUT_INIT_NO_MOUSE) avoids that)\n");
 
 	/* Report protocol, in case a mouse driver left it in boot protocol. */
-	(void)tb_ctrl(REQTYPE_CLASS_IF_OUT, USB_REQ_SETPROTOCOL, 1,
+	tb_st.opens++;
+	tb_st.proto_ret = tb_ctrl(REQTYPE_CLASS_IF_OUT, USB_REQ_SETPROTOCOL, 1,
 	              tb_dev.interface, 0, NULL, 300);
+	tb_log("  set protocol: %d\n", (int)tb_st.proto_ret);
 	switch_mode(&ifaces[pick]);
 
-	tb_log("  %s: if %u ep %02x, %dx%d, pressure %u%s%s, %u buttons\n",
-	       tb_dev.name, tb_dev.interface, tb_ep, (int)tb_dev.max_x,
+	tb_log("  %s: if %u (%u/%u) ep %02x pkt %u, %dx%d, pressure %u%s%s, %u buttons\n",
+	       tb_dev.name, tb_dev.interface, ifaces[pick].subclass,
+	       ifaces[pick].protocol, tb_ep, tb_max_packet, (int)tb_dev.max_x,
 	       (int)tb_dev.max_y, (unsigned)tb_dev.max_pressure,
 	       tb_dev.has_tilt ? ", tilt" : "", tb_dev.has_eraser ? ", eraser" : "",
 	       tb_dev.pad_buttons);
@@ -432,6 +449,10 @@ static s32 open_tablet(void)
 	memset(list, 0, sizeof(list));
 	if (USB_GetDeviceList(list, MAX_DEVICES, USB_CLASS_HID, &count) < 0)
 		return TB_ENODEV;
+	if (count != tb_last_count) {
+		tb_log("  IOS %d, %d HID device(s)\n", (int)IOS_GetVersion(), (int)count);
+		tb_last_count = count;
+	}
 	tb_oh0 = oh0;
 
 	for (i = 0; i < count; i++) {
@@ -441,6 +462,8 @@ static s32 open_tablet(void)
 			continue;
 
 		tb_unplugged = false;
+		tb_log("  %04x:%04x id %08x (%s)\n", vid, pid, (unsigned)list[i].device_id,
+		       oh0 ? "oh0" : "usbv5");
 		if (USB_OpenDevice(oh0 ? USB_OH0_DEVICE_ID : list[i].device_id,
 		                   vid, pid, &tb_fd) < 0)
 			continue;
@@ -607,6 +630,20 @@ static void hid_report(const u8 *r, u32 len)
 	push(&s);
 }
 
+/* The first few distinct failure codes, which say more than the count. */
+static void note_error(s32 ret)
+{
+	int i;
+
+	for (i = 0; i < tb_st.nfirst; i++)
+		if (tb_st.first_err[i] == ret)
+			return;
+	if (tb_st.nfirst < 4) {
+		tb_st.first_err[tb_st.nfirst++] = ret;
+		tb_log("  read failed: %d\n", (int)ret);
+	}
+}
+
 static void *tb_worker(void *arg)
 {
 	int fails = 0;
@@ -629,7 +666,8 @@ static void *tb_worker(void *arg)
 			continue;
 		}
 
-		if (tb_unplugged || fails >= 20) {
+		/* About two seconds of nothing but failures: start over. */
+		if (tb_unplugged || fails >= 200) {
 			tb_sample s = tb_state;
 
 			close_tablet();
@@ -650,10 +688,14 @@ static void *tb_worker(void *arg)
 		DCFlushRange(tb_intr, sizeof(tb_intr));
 		tb_intr_x.done = false;
 		tb_intr_x.pending = true;
-		ret = USB_ReadIntrMsgAsync(tb_fd, tb_ep, tb_max_packet, tb_intr,
+		/* A full-speed interrupt packet is at most 64 bytes, so asking for
+		 * that much always fits whatever the tablet sends, whatever its
+		 * endpoint says. */
+		ret = USB_ReadIntrMsgAsync(tb_fd, tb_ep, INTR_MAX, tb_intr,
 		                           tb_xfer_cb, &tb_intr_x);
 		if (ret < 0) {
 			tb_intr_x.pending = false;
+			note_error(ret);
 			tb_st.errors++;
 			tb_st.last_ret = ret;
 			fails++;
@@ -671,6 +713,7 @@ static void *tb_worker(void *arg)
 		ret = tb_intr_x.res;
 		tb_st.last_ret = ret;
 		if (ret < 0) {
+			note_error(ret);
 			tb_st.errors++;
 			fails++;
 			usleep(5 * 1000);
