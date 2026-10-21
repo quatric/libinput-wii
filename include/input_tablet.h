@@ -1,0 +1,94 @@
+/* USB pen tablet driver for libogc homebrew.
+ *
+ * Works from the tablet's own HID report descriptor, so any tablet that
+ * describes its pen there is covered: Wacom's current Intuos, One and Intuos
+ * Pro lines (whose vendor usage page mirrors the standard digitizer page),
+ * and the many Huion, XP-Pen and Gaomon tablets that use the standard page
+ * directly.  Older Wacom Bamboo / Intuos (CTL-480 era) tablets, which send a
+ * fixed undescribed report, are switched into tablet mode and read in that
+ * format instead.
+ *
+ * A background thread looks for a tablet, reads it, and picks it up again
+ * after it is unplugged and plugged back in.
+ */
+
+#ifndef INPUT_TABLET_H
+#define INPUT_TABLET_H
+
+#include <gctypes.h>
+
+#define TB_OK       0
+#define TB_ENODEV  -1
+#define TB_ESTATE  -3
+#define TB_ENOMEM  -5
+
+/* tb_sample.buttons */
+#define TB_BUTTON_TIP     0x01 /* the nib (or eraser) touching the surface */
+#define TB_BUTTON_BARREL  0x02 /* lower side switch */
+#define TB_BUTTON_BARREL2 0x04 /* upper side switch */
+
+typedef struct {
+	u16 vid, pid;
+	char name[48];        /* product string, or "VID:PID" */
+	u8 interface;
+	u8 report_id;         /* the pen's report */
+	s32 max_x, max_y;     /* coordinate range, from 0 */
+	u32 max_pressure;
+	bool has_tilt;
+	bool has_eraser;
+	u8 pad_buttons;       /* buttons on the tablet itself */
+	bool legacy;          /* old fixed-format Wacom protocol */
+} tb_info;
+
+typedef struct {
+	s32 x, y;             /* tablet units, 0..max_x / 0..max_y */
+	float nx, ny;         /* the same as 0..1 */
+	float pressure;       /* 0..1 */
+	u32 raw_pressure;
+	s8 tilt_x, tilt_y;    /* degrees, when has_tilt */
+	u8 buttons;           /* TB_BUTTON_* */
+	bool in_range;        /* the pen is near enough to be tracked */
+	bool eraser;          /* the pen is upside down */
+	u16 pad;              /* tablet buttons held, bit n = button n */
+} tb_sample;
+
+/* Where the device scan and errors go, e.g. TB_SetLog(printf). */
+void TB_SetLog(int (*print)(const char *fmt, ...));
+
+/* Starts the thread that finds and reads the tablet.  Calls USB_Initialize
+ * itself.  Not finding a tablet is not an error: it is picked up whenever one
+ * is plugged in. */
+s32 TB_Init(void);
+void TB_Shutdown(void);
+
+bool TB_Connected(void);
+bool TB_GetInfo(tb_info *info);
+
+/* The pen as last reported. */
+void TB_GetState(tb_sample *out);
+
+/* Every report since the last call, oldest first; false when there are none
+ * left.  Tablets report at 130-200 Hz, so drawing from these instead of
+ * TB_GetState keeps fast strokes smooth.  The queue holds 256. */
+bool TB_Pop(tb_sample *out);
+
+/* Maps a sample onto a w x h area, keeping the tablet's proportions: the
+ * active area is centred, and a pen outside it gives an edge position. */
+void TB_ToScreen(const tb_sample *s, int w, int h, int *x, int *y);
+
+/* ---- debugging ---------------------------------------------------------- */
+
+typedef struct {
+	u32 reports;     /* every interrupt transfer that came back */
+	u32 pen_reports;
+	u32 other;       /* reports that were neither pen nor pad */
+	u32 errors;
+	s32 last_ret;
+	u8 last_id;
+	u8 last[64];     /* the last report, as received */
+	u8 last_len;
+} tb_stats;
+
+void TB_GetStats(tb_stats *out);
+
+#endif /* INPUT_TABLET_H */

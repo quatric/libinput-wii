@@ -11,6 +11,7 @@ USB keyboard and mouse input for the Nintendo Wii, built on libogc.
 - Mouse position (clamped to configurable bounds, optional speed multiplier), deltas, wheel and buttons
 - Wii Speak microphone (`input_wiispeak.h`): boots the mic and streams 16-bit mono samples
 - USB microphones (`input_usbmic.h`): any class-compliant (USB Audio Class 1.0) mic, streamed as 16-bit mono
+- USB pen tablets (`input_tablet.h`): Wacom, Huion, XP-Pen and other drawing tablets, with pressure, tilt, eraser and tablet keys
 
 The keyboard handling was originally part of GlowWii and has been split out
 into a reusable library; mouse support is new.
@@ -128,6 +129,47 @@ driver reads the format list from the mic itself and picks 16-bit PCM at 48 kHz 
 the mic and exposes its volume control as a percentage. Full-speed only, which is all the Wii's
 ports run at; mics that only stream at high speed (USB Audio Class 2.0) are not supported. Needs an
 IOS with `/dev/usb/oh0` or `/dev/usb/ven`. Not yet tested on real hardware.
+
+### Pen tablets
+
+```c
+#include <input_tablet.h>
+
+INPUT_InitEx(INPUT_INIT_NO_MOUSE);         /* see below */
+TB_Init();                                 /* finds the tablet, now or when plugged in */
+
+/* each frame: */
+tb_sample s;
+while (TB_Pop(&s)) {                       /* every report, 130-200 a second */
+    int x, y;
+    TB_ToScreen(&s, 640, 480, &x, &y);
+    if (s.buttons & TB_BUTTON_TIP) { /* draw, s.pressure is 0..1 */ }
+}
+
+TB_Shutdown();
+```
+
+The driver reads the tablet's HID report descriptor and finds the pen's fields there, so it is not
+tied to one model. That covers Wacom's current tablets (Intuos CTL-4100/6100, Wacom One, Intuos Pro),
+which put the pen on Wacom's vendor usage page `0xFF0D` as a mirror of the standard digitizer page,
+and the Huion, XP-Pen and Gaomon tablets that use the standard page itself. Older Wacoms (Bamboo,
+CTL-480 era Intuos), whose descriptor describes no pen, are switched into tablet mode with feature
+report 2 and read in their fixed format. `TB_GetInfo` gives the coordinate and pressure range,
+`TB_GetState` the latest sample, and `TB_GetStats` the raw last report, to help with a tablet that
+does not work.
+
+Some tablets also present themselves as a boot-protocol mouse, and libogc's mouse driver would then
+read the same interface and take some of the pen's reports. `INPUT_InitEx(INPUT_INIT_NO_MOUSE)` keeps
+it off. A read stays queued in IOS while the pen is away from the tablet, so apps should reload IOS
+before returning to the loader, as `example/tablet` does.
+
+The descriptor parser (`source/libinput_hidparse.c`) has no libogc dependency and was checked on a
+computer against Wacom descriptors from the Linux kernel's HID selftests (PTH-460/660/860 and a
+CTL-style pen). The USB side has not yet been run against a real tablet.
+
+`example/tablet` is a pressure-sensitive painting program built on it: `make` there makes a
+`boot.dol` for the Homebrew Channel, with controls listed at the top of its `main.c`. Drawings save
+to `sd:/sketches/` as BMP files.
 
 ### Using it from an app
 

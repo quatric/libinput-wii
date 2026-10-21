@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<app version="1">
+	<name>Tablet Sketch</name>
+	<coder>quatric</coder>
+	<version>0.1</version>
+	<short_description>Draw with a USB pen tablet</short_description>
+	<long_description>Pressure-sensitive painting with a USB drawing tablet (Wacom, Huion, XP-Pen and others) plugged into the Wii's rear USB port. Saves drawings to sd:/sketches/ as BMP files.</long_description>
+</app>
