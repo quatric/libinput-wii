@@ -10,6 +10,7 @@ USB keyboard and mouse input for the Nintendo Wii, built on libogc.
 - Optional keyboard-to-Wii-Remote mapping (`INPUT_KeyboardPadHeld/Down`)
 - Mouse position (clamped to configurable bounds, optional speed multiplier), deltas, wheel and buttons
 - Wii Speak microphone (`input_wiispeak.h`): boots the mic and streams 16-bit mono samples
+- USB microphones (`input_usbmic.h`): any class-compliant (USB Audio Class 1.0) mic, streamed as 16-bit mono
 
 The keyboard handling was originally part of GlowWii and has been split out
 into a reusable library; mouse support is new.
@@ -101,6 +102,32 @@ The Wii Speak (`057e:0308`) is not a USB audio class device. The driver reimplem
 Apps have to get it from the user (RecordMii's `tools/extract_pmic_firmware.py` pulls it out of an
 RVL SDK `pmic.a`). Dolphin's emulated Wii Speak accepts any non-empty blob and records from the host
 microphone. Not yet tested on real hardware.
+
+### USB microphones
+
+```c
+#include <input_usbmic.h>
+
+um_info mic;
+
+UM_SetLog(printf);                         /* optional: show the scan */
+if (UM_Open(&mic) == UM_OK) {              /* mic.rate, mic.name, ... */
+    UM_SetVolume(75);                      /* if mic.has_volume */
+    UM_Start();
+    /* each frame: */
+    s16 buf[1024];
+    u32 n = UM_Read(buf, 1024);            /* mono, at mic.rate */
+    UM_Stop();
+    UM_Close();
+}
+```
+
+Works with the plug-and-play USB mics sold for PCs, which follow the USB Audio Class 1.0 spec. The
+driver reads the format list from the mic itself and picks 16-bit PCM at 48 kHz when offered (then
+44.1 kHz, then whatever is closest); stereo and 24-bit streams are folded to 16-bit mono. It unmutes
+the mic and exposes its volume control as a percentage. Full-speed only, which is all the Wii's
+ports run at; mics that only stream at high speed (USB Audio Class 2.0) are not supported. Needs an
+IOS with `/dev/usb/oh0` or `/dev/usb/ven`. Not yet tested on real hardware.
 
 ### Using it from an app
 
