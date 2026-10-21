@@ -11,7 +11,7 @@ USB keyboard and mouse input for the Nintendo Wii, built on libogc.
 - Mouse position (clamped to configurable bounds, optional speed multiplier), deltas, wheel and buttons
 - Wii Speak microphone (`input_wiispeak.h`): boots the mic and streams 16-bit mono samples
 - USB microphones (`input_usbmic.h`): any class-compliant (USB Audio Class 1.0) mic, streamed as 16-bit mono
-- USB pen tablets (`input_tablet.h`): Wacom, Huion, XP-Pen and other drawing tablets, with pressure, tilt, eraser and tablet keys
+- USB pen tablets (`input_tablet.h`): Wacom, Huion, XP-Pen and other drawing tablets, with pressure, tilt, eraser, tablet keys and Bamboo finger touch
 
 The keyboard handling was originally part of GlowWii and has been split out
 into a reusable library; mouse support is new.
@@ -154,7 +154,9 @@ tied to one model. That covers Wacom's current tablets (Intuos CTL-4100/6100, Wa
 which put the pen on Wacom's vendor usage page `0xFF0D` as a mirror of the standard digitizer page,
 and the Huion, XP-Pen and Gaomon tablets that use the standard page itself. Older Wacoms (Bamboo,
 CTL-480 era Intuos), whose descriptor describes no pen, are switched into tablet mode with feature
-report 2 and read in their fixed format. `TB_GetInfo` gives the coordinate and pressure range,
+report 2 and read in their fixed format. On a Bamboo Pen & Touch the touch surface is read too:
+fingers come out of `TB_Pop` as samples with `finger` set (and from `TB_GetFingers`), and are
+ignored while the pen is in range. `TB_GetInfo` gives the coordinate and pressure range,
 `TB_GetState` the latest sample, and `TB_GetStats` the raw last report, to help with a tablet that
 does not work.
 
@@ -165,8 +167,13 @@ before returning to the loader, as `example/tablet` does.
 
 The descriptor parser (`source/libinput_hidparse.c`) has no libogc dependency and was checked on a
 computer against Wacom descriptors from the Linux kernel's HID selftests (PTH-460/660/860 and a
-CTL-style pen). Tested on hardware with a Wacom Intuos S (CTL-4100): pen position, pressure and
-strokes all work.
+CTL-style pen). Tested on hardware with a Wacom Intuos S (CTL-4100), pen only as it has no touch
+sensor, and with the finger side of a Bamboo Pen & Touch (CTH-460). The Bamboo's pen has not been
+tried yet.
+
+Under USBV5 IOSes (what the Homebrew Channel runs) a device is listed once per interface, and an
+interrupt read goes to the interface its handle stands for, so the driver opens the pen and touch
+interfaces through their own list entries, matched by the interface number in each entry's token.
 
 `example/tablet` is a pressure-sensitive painting program built on it: `make` there makes a
 `boot.dol` for the Homebrew Channel, with controls listed at the top of its `main.c`. Drawings save
