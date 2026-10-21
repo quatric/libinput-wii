@@ -9,6 +9,7 @@ USB keyboard and mouse input for the Nintendo Wii, built on libogc.
 - Per-frame polling: held / pressed / released for every USB HID key
 - Optional keyboard-to-Wii-Remote mapping (`INPUT_KeyboardPadHeld/Down`)
 - Mouse position (clamped to configurable bounds, optional speed multiplier), deltas, wheel and buttons
+- Wii Speak microphone (`input_wiispeak.h`): boots the mic and streams 16-bit mono samples
 
 The keyboard handling was originally part of GlowWii and has been split out
 into a reusable library; mouse support is new.
@@ -75,6 +76,31 @@ INPUT_Shutdown();
 * `INPUT_GameCubeMapSet/Clear` do the same for the GameCube pad.
 * `INPUT_IgnoreWiimoteButtons` leaves a channel's own Wii Remote buttons to another layer.
 * `INPUT_StickRaw` gives a stick before its length is clamped, for apps with their own scaling.
+
+### Wii Speak
+
+```c
+#include <input_wiispeak.h>
+
+WS_SetLog(printf);                         /* optional: show the boot steps */
+if (WS_Open(firmware, firmware_size) == WS_OK) {
+    WS_SetFreq(WS_FREQ_16KHZ);
+    WS_SetSignalProcessing(false);
+    WS_Start();
+    /* each frame: */
+    s16 buf[1024];
+    u32 n = WS_Read(buf, 1024);            /* host-endian samples */
+    WS_Stop();
+    WS_Close();
+}
+```
+
+The Wii Speak (`057e:0308`) is not a USB audio class device. The driver reimplements the RVL SDK's
+`PMIC` library over `/dev/usb/oh0`, and was taken from RecordMii. The mic has no firmware of its own:
+`WS_Open` uploads the 97,480-byte `PMIC_FIRM_DATA` blob, which is Nintendo's and is **not** included.
+Apps have to get it from the user (RecordMii's `tools/extract_pmic_firmware.py` pulls it out of an
+RVL SDK `pmic.a`). Dolphin's emulated Wii Speak accepts any non-empty blob and records from the host
+microphone. Not yet tested on real hardware.
 
 ### Using it from an app
 

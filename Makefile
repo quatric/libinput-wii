@@ -34,14 +34,14 @@ $(LIB): $(OBJS)
 	@mkdir -p lib
 	$(AR) rcs $@ $^
 
-build/%.o: source/%.c source/libinput_internal.h include/input_wii.h
+build/%.o: source/%.c source/libinput_internal.h include/input_wii.h include/input_wiispeak.h
 	@mkdir -p build
 	$(CC) $(CFLAGS) -c $< -o $@
 
 install: $(LIB)
 	@mkdir -p $(DESTDIR)$(DEVKITPRO)/portlibs/ppc/lib $(DESTDIR)$(DEVKITPRO)/portlibs/ppc/include
 	cp $(LIB) $(DESTDIR)$(DEVKITPRO)/portlibs/ppc/lib/
-	cp include/input_wii.h $(DESTDIR)$(DEVKITPRO)/portlibs/ppc/include/
+	cp include/input_wii.h include/input_wiispeak.h $(DESTDIR)$(DEVKITPRO)/portlibs/ppc/include/
 
 clean:
 	rm -rf build lib
