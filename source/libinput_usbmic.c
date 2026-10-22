@@ -1,5 +1,7 @@
 /* USB Audio Class microphone driver for libogc homebrew.  See input_usbmic.h. */
 
+#ifdef HAVE_MIC
+
 #include <malloc.h>
 #include <stdio.h>
 #include <string.h>
@@ -1129,3 +1131,5 @@ void UM_GetStats(um_stats *out)
 	if (out)
 		*out = um_st;
 }
+
+#endif /* HAVE_MIC */

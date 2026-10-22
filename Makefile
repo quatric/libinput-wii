@@ -12,6 +12,8 @@ CFLAGS  := -O2 -Wall -Wextra -DGEKKO -DHW_RVL -mrvl -mcpu=750 -meabi -mhard-floa
 WITH_WIIDRC    ?= 0
 WITH_WUPC      ?= 0
 WITH_SICKSAXIS ?= 0
+WITH_TABLET    ?= 0
+WITH_MIC       ?= 0
 PORTLIBS       ?= $(CURDIR)/portlibs/ppc
 CFLAGS += -I$(PORTLIBS)/include
 ifeq ($(WITH_WIIDRC),1)
@@ -23,19 +25,31 @@ endif
 ifeq ($(WITH_SICKSAXIS),1)
  CFLAGS += -DHAVE_SICKSAXIS
 endif
+# USB pen tablets and the uDraw GameTablet (input_tablet.h)
+ifeq ($(WITH_TABLET),1)
+ CFLAGS += -DHAVE_TABLET
+endif
+# Wii Speak and USB microphones (input_wiispeak.h, input_usbmic.h)
+ifeq ($(WITH_MIC),1)
+ CFLAGS += -DHAVE_MIC
+endif
 
 SRCS    := $(wildcard source/*.c)
-OBJS    := $(patsubst source/%.c,build/%.o,$(SRCS))
+# one folder of objects for each set of options, so switching them rebuilds
+BUILD   := build/$(WITH_WIIDRC)$(WITH_WUPC)$(WITH_SICKSAXIS)$(WITH_TABLET)$(WITH_MIC)
+OBJS    := $(patsubst source/%.c,$(BUILD)/%.o,$(SRCS))
 LIB     := lib/libinput-wii.a
 
 all: $(LIB)
 
-$(LIB): $(OBJS)
+# made again every time: it may hold another set of options' objects
+$(LIB): $(OBJS) FORCE
 	@mkdir -p lib
-	$(AR) rcs $@ $^
+	@rm -f $@
+	$(AR) rcs $@ $(OBJS)
 
-build/%.o: source/%.c source/libinput_internal.h source/libinput_hidparse.h include/input_wii.h include/input_wiispeak.h include/input_usbmic.h include/input_tablet.h
-	@mkdir -p build
+$(BUILD)/%.o: source/%.c source/libinput_internal.h source/libinput_hidparse.h include/input_wii.h include/input_wiispeak.h include/input_usbmic.h include/input_tablet.h
+	@mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 install: $(LIB)
@@ -49,4 +63,4 @@ clean:
 controllers:
 	./scripts/build_controller_portlibs.sh
 
-.PHONY: all install clean controllers
+.PHONY: all install clean controllers FORCE

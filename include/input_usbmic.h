@@ -5,6 +5,8 @@
  * own descriptors: 16-bit PCM at 48 kHz is preferred, and stereo or 24-bit
  * streams are folded down to 16-bit mono.  Full-speed devices only, which is
  * what the Wii's rear ports run at.
+ *
+ * Built only with HAVE_MIC (make WITH_MIC=1).
  */
 
 #ifndef INPUT_USBMIC_H

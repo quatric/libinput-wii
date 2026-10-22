@@ -11,8 +11,10 @@ LIBOGC  ?= $(DEVKITPRO)/libogc
 LIB     := ../..
 
 CFLAGS  := -O2 -Wall -Wextra -DGEKKO -DHW_RVL -mrvl -mcpu=750 -meabi -mhard-float \
-           -I$(LIB)/include -I$(LIB)/source -I$(LIBOGC)/include
-LDFLAGS := -mrvl -mcpu=750 -meabi -mhard-float -L$(LIBOGC)/lib/wii
+           -DHAVE_TABLET -I$(LIB)/include -I$(LIB)/source -I$(LIBOGC)/include
+# the uDraw GameTablet side of the driver hooks into wiiuse
+LDFLAGS := -mrvl -mcpu=750 -meabi -mhard-float -L$(LIBOGC)/lib/wii \
+           -Wl,--wrap=classic_ctrl_handshake,--wrap=parse_event
 LIBS    := -lfat -lwiikeyboard -lwiiuse -lbte -logc -lm
 
 SRCS    := main.c $(wildcard $(LIB)/source/*.c)

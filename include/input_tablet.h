@@ -10,6 +10,16 @@
  *
  * A background thread looks for a tablet, reads it, and picks it up again
  * after it is unplugged and plugged back in.
+ *
+ * The uDraw GameTablet, plugged into a Wii Remote, comes through the same
+ * calls: its samples carry the Wii Remote's number in tb_sample.wiimote.  It
+ * needs two linker wrappers in the app,
+ *     -Wl,--wrap=classic_ctrl_handshake,--wrap=parse_event
+ * as libogc's wiiuse would otherwise take it for a Classic Controller.  An
+ * app built with HAVE_TABLET needs them even for USB tablets alone: without
+ * them the link fails on __real_parse_event.
+ *
+ * Built only with HAVE_TABLET (make WITH_TABLET=1).
  */
 
 #ifndef INPUT_TABLET_H
@@ -60,6 +70,11 @@ typedef struct {
 	 * the pen's units, and pressure is a fixed 0.5.  Fingers are ignored
 	 * while the pen is in range. */
 	bool finger;
+	/* The Wii Remote (0-3) whose uDraw sent this, or -1 for the USB tablet.
+	 * On a uDraw, TB_BUTTON_BARREL is the lower rocker and TB_BUTTON_BARREL2
+	 * the upper one, and in_range is the pen over the drawing area (hovering
+	 * or touching). */
+	s8 wiimote;
 } tb_sample;
 
 #define TB_MAX_FINGERS 4
@@ -75,24 +90,35 @@ void TB_SetLog(int (*print)(const char *fmt, ...));
 
 /* Starts the thread that finds and reads the tablet.  Calls USB_Initialize
  * itself.  Not finding a tablet is not an error: it is picked up whenever one
- * is plugged in. */
+ * is plugged in.  A uDraw needs WPAD_Init, not this, but is read through the
+ * calls below either way. */
 s32 TB_Init(void);
 void TB_Shutdown(void);
 
+/* A USB tablet is open, or a uDraw is reporting. */
 bool TB_Connected(void);
+/* The USB tablet's, or else a uDraw's (name "uDraw GameTablet", no USB
+ * fields). */
 bool TB_GetInfo(tb_info *info);
 
-/* The pen as last reported. */
+/* The pen as last reported, by whichever tablet reported last. */
 void TB_GetState(tb_sample *out);
 
 /* Every report since the last call, oldest first; false when there are none
- * left.  Tablets report at 130-200 Hz, so drawing from these instead of
- * TB_GetState keeps fast strokes smooth.  The queue holds 256. */
+ * left.  Tablets report at 130-200 Hz (a uDraw at the Wii Remote's 100), so
+ * drawing from these instead of TB_GetState keeps fast strokes smooth.  The
+ * queue holds 256 (64 for each uDraw). */
 bool TB_Pop(tb_sample *out);
 
 /* Maps a sample onto a w x h area, keeping the tablet's proportions: the
  * active area is centred, and a pen outside it gives an edge position. */
 void TB_ToScreen(const tb_sample *s, int w, int h, int *x, int *y);
+
+/* A uDraw on this Wii Remote (0-3) has reported in the last quarter second. */
+bool TB_UDrawConnected(int wiimote);
+/* The uDraw's drawing area in its raw units; tablets differ a little.  The
+ * default, 0x56-0x780 by 0x65-0x5a5, is the printed area's edge. */
+void TB_UDrawSetArea(s32 min_x, s32 max_x, s32 min_y, s32 max_y);
 
 /* The fingers on a touch surface now, up to `max`; returns how many. */
 u32 TB_GetFingers(tb_finger *out, u32 max);

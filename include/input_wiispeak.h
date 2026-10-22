@@ -3,6 +3,8 @@
  * Reimplements the RVL SDK's PMIC library on top of libogc's /dev/usb/oh0
  * wrapper.  Register numbers and the boot sequence were recovered from
  * pmic.a and cross-checked against Dolphin's emulated device.
+ *
+ * Built only with HAVE_MIC (make WITH_MIC=1).
  */
 
 #ifndef INPUT_WIISPEAK_H

@@ -1,5 +1,7 @@
 /* HID report descriptor parser.  See libinput_hidparse.h. */
 
+#ifdef HAVE_TABLET
+
 #include <string.h>
 
 #include "libinput_hidparse.h"
@@ -357,3 +359,5 @@ bool hidp_find_pen(const hidp_desc *d, hidp_pen *pen)
 	}
 	return true;
 }
+
+#endif /* HAVE_TABLET */

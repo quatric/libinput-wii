@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<app version="1">
+	<name>uDraw Sketch</name>
+	<coder>quatric</coder>
+	<version>0.1</version>
+	<short_description>Draw with the uDraw GameTablet</short_description>
+	<long_description>Pressure-sensitive painting with THQ's uDraw GameTablet, the drawing tablet that holds a Wii Remote. Up to four tablets draw at once. Saves drawings to sd:/udraw/ as BMP files.</long_description>
+</app>

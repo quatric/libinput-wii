@@ -22,4 +22,13 @@ void inpw_mouse_update(void);
 void inpw_mouse_set_bounds(int w, int h);
 void inpw_cursor_update(void);
 
+#ifdef HAVE_TABLET
+#include "input_tablet.h"
+/* the uDraw, for the TB_* calls in libinput_tablet.c */
+bool inpw_udraw_pop(tb_sample *out);
+bool inpw_udraw_state(tb_sample *out);
+bool inpw_udraw_info(tb_info *info);
+void inpw_udraw_extent(s32 *w, s32 *h);
+#endif
+
 #endif

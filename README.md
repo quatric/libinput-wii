@@ -12,6 +12,9 @@ USB keyboard and mouse input for the Nintendo Wii, built on libogc.
 - Wii Speak microphone (`input_wiispeak.h`): boots the mic and streams 16-bit mono samples
 - USB microphones (`input_usbmic.h`): any class-compliant (USB Audio Class 1.0) mic, streamed as 16-bit mono
 - USB pen tablets (`input_tablet.h`): Wacom, Huion, XP-Pen and other drawing tablets, with pressure, tilt, eraser, tablet keys and Bamboo finger touch
+- The uDraw GameTablet for the Wii, through the same `input_tablet.h` calls, with pressure and both rocker buttons
+
+The microphone and tablet drivers are compile options, off by default (see below).
 
 The keyboard handling was originally part of GlowWii and has been split out
 into a reusable library; mouse support is new.
@@ -37,6 +40,18 @@ Enable the same flags when linking your app, adding `-lwiidrc`, `-lwupc` (with
 `-Wl,-wrap,wiiuse_accept`) and `-lsicksaxis` ahead of `-lwiiuse`.
 
 Link with `-linput-wii -lwiikeyboard -logc` (and the usual `-lwiiuse -lbte -lm`).
+
+### Optional drivers
+
+```sh
+make WITH_TABLET=1    # USB pen tablets and the uDraw GameTablet (input_tablet.h)
+make WITH_MIC=1       # Wii Speak and USB microphones (input_wiispeak.h, input_usbmic.h)
+```
+
+Each option can be combined with the others; every set of options builds into its own folder under
+`build/`, so switching them never mixes objects. Without an option its sources compile to nothing,
+and apps get link errors if they call into it. A library built with `WITH_TABLET=1` also has to be
+linked with `-Wl,--wrap=classic_ctrl_handshake,--wrap=parse_event` (see the uDraw section).
 
 ## Usage
 
@@ -179,6 +194,42 @@ interfaces through their own list entries, matched by the interface number in ea
 `boot.dol` for the Homebrew Channel, with controls listed at the top of its `main.c`. Drawings save
 to `sd:/sketches/` as BMP files.
 
+### uDraw GameTablet
+
+The THQ uDraw GameTablet plugs into the Wii Remote like a Nunchuk. With `WITH_TABLET=1` it shows up
+through the pen tablet calls above: `TB_Pop` gives one sample per Wii Remote report with `wiimote`
+set to the channel it came from (`-1` for a USB tablet), `TB_Connected` and `TB_GetInfo` see it,
+`TB_ToScreen` maps it, and `TB_UDrawConnected(chan)` tells which channels have one. The pen gives
+x/y over a 1834 x 1344 area, 9-bit pressure (`TB_BUTTON_TIP` once it passes a small threshold, with
+hysteresis), and the two rockers come out as `TB_BUTTON_BARREL2` (upper) and `TB_BUTTON_BARREL`
+(lower). The pen area can be adjusted with `TB_UDrawSetArea` for a tablet that does not reach the
+corners. `TB_Init` is not needed for the uDraw alone, and up to four can be used at once.
+
+wiiuse knows nothing of the uDraw and would take it for a Classic Controller, so the driver hooks
+two of its functions with linker wraps. Apps that use it have to link with
+
+```make
+LDFLAGS += -Wl,--wrap=classic_ctrl_handshake,--wrap=parse_event
+```
+
+or the link fails on `__real_parse_event`. The decoding is written against libogc 3.1's wiiuse
+(a warning shows up when building against another version).
+
+libogc's Bluetooth stack can drop an output report while reporting it sent, and wiiuse then waits
+forever for its answer, so an extension's handshake never finishes. This happens with every
+extension in Dolphin, the Nunchuk too. The uDraw driver resends a command that has had no answer
+for 300 ms, which fixes it for every extension while the driver is linked in.
+
+`example/udraw` is a painting program for it: up to four tablets at once, the upper rocker picks the
+next colour, the lower one held is the eraser, +/- change the brush, 1 clears, 2 saves a BMP to
+`sd:/udraw/`, HOME exits. `make TEST=1` there builds a version that logs to `sd:/udraw/test/` and
+powers off after 20 s, for driving it from Dolphin. Dolphin emulates the uDraw (choose it as the
+Wii Remote's extension); for its stylus to move while the window is in the background, turn on
+background input. Tested in Dolphin 2609; not yet on a real uDraw.
+
+The report format comes from WiiBrew and Dolphin's emulation of the tablet, with
+rvlpaint by cmyksoda as a working reference.
+
 ### Using it from an app
 
 Add it as a git submodule and compile its sources with your own flags, so the
@@ -191,6 +242,8 @@ git submodule add https://github.com/quatric/libwiiinput.git libwiiinput
 ```make
 SOURCES  += libwiiinput/source
 CFLAGS   += -Ilibwiiinput/include
+CFLAGS   += -DHAVE_TABLET -DHAVE_MIC     # only the drivers you use
+LDFLAGS  += -Wl,--wrap=classic_ctrl_handshake,--wrap=parse_event   # with HAVE_TABLET
 ```
 
 See `example/main.c` for a complete program.

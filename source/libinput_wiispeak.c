@@ -1,5 +1,7 @@
 /* Wii Speak (P-Mic) driver for libogc homebrew.  See input_wiispeak.h. */
 
+#ifdef HAVE_MIC
+
 #include <malloc.h>
 #include <stdio.h>
 #include <string.h>
@@ -1204,3 +1206,5 @@ void WS_SetCancel(bool (*cancel)(void))
 {
 	ws_cancel = cancel;
 }
+
+#endif /* HAVE_MIC */

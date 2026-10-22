@@ -1,5 +1,7 @@
 /* USB pen tablet driver for libogc homebrew.  See input_tablet.h. */
 
+#ifdef HAVE_TABLET
+
 #include <malloc.h>
 #include <stdio.h>
 #include <string.h>
@@ -14,6 +16,7 @@
 
 #include "input_tablet.h"
 #include "libinput_hidparse.h"
+#include "libinput_internal.h"
 
 #define WACOM_VID     0x056A
 
@@ -702,19 +705,21 @@ static void close_tablet(void)
 
 /* ---- reports ------------------------------------------------------------- */
 
-static void push(const tb_sample *s)
+static void push(const tb_sample *in)
 {
+	tb_sample s = *in;
 	u32 next;
 
+	s.wiimote = -1;
 	LWP_MutexLock(tb_lock);
-	if (s->finger)
-		tb_state.pad = s->pad;
+	if (s.finger)
+		tb_state.pad = s.pad;
 	else
-		tb_state = *s;
+		tb_state = s;
 	next = (tb_head + 1) & QUEUE_MASK;
 	if (next == tb_tail)
 		tb_tail = (tb_tail + 1) & QUEUE_MASK; /* drop the oldest */
-	tb_queue[tb_head] = *s;
+	tb_queue[tb_head] = s;
 	tb_head = next;
 	LWP_MutexUnlock(tb_lock);
 }
@@ -1084,6 +1089,7 @@ s32 TB_Init(void)
 	USB_Initialize();
 
 	memset(&tb_state, 0, sizeof(tb_state));
+	tb_state.wiimote = -1;
 	memset(&tb_st, 0, sizeof(tb_st));
 	tb_head = tb_tail = 0;
 
@@ -1122,13 +1128,21 @@ void TB_Shutdown(void)
 
 bool TB_Connected(void)
 {
-	return tb_opened;
+	tb_info info;
+	return tb_opened || inpw_udraw_info(&info);
 }
 
 bool TB_GetInfo(tb_info *info)
 {
-	if (!tb_opened)
-		return false;
+	tb_info ud;
+
+	if (!tb_opened) {
+		if (!inpw_udraw_info(&ud))
+			return false;
+		if (info)
+			*info = ud;
+		return true;
+	}
 	if (info)
 		*info = tb_dev;
 	return true;
@@ -1136,34 +1150,55 @@ bool TB_GetInfo(tb_info *info)
 
 void TB_GetState(tb_sample *out)
 {
+	tb_sample ud;
+
 	if (!out)
 		return;
-	LWP_MutexLock(tb_lock);
-	*out = tb_state;
-	LWP_MutexUnlock(tb_lock);
+	/* before TB_Init there is no lock, and no USB tablet */
+	if (tb_lock != LWP_MUTEX_NULL) {
+		LWP_MutexLock(tb_lock);
+		*out = tb_state;
+		LWP_MutexUnlock(tb_lock);
+	} else {
+		memset(out, 0, sizeof(*out));
+		out->wiimote = -1;
+	}
+	if (inpw_udraw_state(&ud) && (!tb_opened || (s32)(ud.time - out->time) > 0))
+		*out = ud;
 }
 
 bool TB_Pop(tb_sample *out)
 {
+	tb_sample s;
 	bool got = false;
 
-	LWP_MutexLock(tb_lock);
-	if (tb_tail != tb_head) {
-		if (out)
-			*out = tb_queue[tb_tail];
-		tb_tail = (tb_tail + 1) & QUEUE_MASK;
-		got = true;
+	if (tb_lock != LWP_MUTEX_NULL) {
+		LWP_MutexLock(tb_lock);
+		if (tb_tail != tb_head) {
+			s = tb_queue[tb_tail];
+			tb_tail = (tb_tail + 1) & QUEUE_MASK;
+			got = true;
+		}
+		LWP_MutexUnlock(tb_lock);
 	}
-	LWP_MutexUnlock(tb_lock);
+	if (!got)
+		got = inpw_udraw_pop(&s);
+	if (got && out)
+		*out = s;
 	return got;
 }
 
 void TB_ToScreen(const tb_sample *s, int w, int h, int *x, int *y)
 {
-	float aspect = (float)tb_dev.max_x / (float)(tb_dev.max_y ? tb_dev.max_y : 1);
-	float aw = (float)w, ah = (float)w / aspect;
+	s32 max_x = tb_dev.max_x, max_y = tb_dev.max_y;
+	float aspect, aw, ah;
 
-	if (!s || tb_dev.max_x <= 0) {
+	if (s && s->wiimote >= 0)
+		inpw_udraw_extent(&max_x, &max_y);
+	aspect = (float)max_x / (float)(max_y ? max_y : 1);
+	aw = (float)w;
+	ah = (float)w / aspect;
+	if (!s || max_x <= 0) {
 		if (x) *x = 0;
 		if (y) *y = 0;
 		return;
@@ -1193,3 +1228,5 @@ void TB_GetStats(tb_stats *out)
 	if (out)
 		*out = tb_st;
 }
+
+#endif /* HAVE_TABLET */
