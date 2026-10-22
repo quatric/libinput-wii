@@ -143,6 +143,7 @@ typedef struct {
 	s32 first_err[4];
 	u8 nfirst;
 	u32 opens;
+	u32 false_removals; /* removal hooks fired with the tablet still there */
 } tb_stats;
 
 void TB_GetStats(tb_stats *out);

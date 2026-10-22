@@ -601,9 +601,8 @@ static void place_pipes(const usb_device_entry *list, int count, int at)
 		open_touch(list, count, at);
 }
 
-/* Whether the pen's entry is still in the device list.  Opening a second
- * entry of the same device makes IOS report a change, which libogc passes on
- * as a removal of the first; a device that is still listed was not unplugged. */
+/* Whether the pen's entry is still in the device list: a device that is
+ * still listed was not unplugged, whatever the removal hook said. */
 static bool still_listed(void)
 {
 	static usb_device_entry list[MAX_DEVICES] ATTRIBUTE_ALIGN(32);
@@ -665,7 +664,7 @@ static s32 open_tablet(void)
 		if (probe_device(vid, pid)) {
 			tb_opened = true;
 			place_pipes(list, count, i);
-			/* Only now: opening entries is what sets off false removals. */
+			/* Only now: opening and closing entries sets off false removals. */
 			tb_unplugged = false;
 			USB_DeviceRemovalNotifyAsync(tb_fd, tb_removed_cb, NULL);
 			return TB_OK;
@@ -1019,8 +1018,13 @@ static void *tb_worker(void *arg)
 			continue;
 		}
 
+		/* libogc's USBV5 close calls every removal hook on a device, so
+		 * another driver opening the tablet to look at it and closing it
+		 * again -- libwiikeyboard does, on every rescan -- reads here as an
+		 * unplug.  Believe it only once the device has left the list. */
 		if (tb_unplugged && still_listed()) {
-			tb_log("  removal notice, but still listed\n");
+			if (tb_st.false_removals++ == 0)
+				tb_log("  removal notice, but still listed: ignoring these\n");
 			tb_unplugged = false;
 			USB_DeviceRemovalNotifyAsync(tb_fd, tb_removed_cb, NULL);
 		}
