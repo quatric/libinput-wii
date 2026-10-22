@@ -225,7 +225,7 @@ next colour, the lower one held is the eraser, +/- change the brush, 1 clears, 2
 `sd:/udraw/`, HOME exits. `make TEST=1` there builds a version that logs to `sd:/udraw/test/` and
 powers off after 20 s, for driving it from Dolphin. Dolphin emulates the uDraw (choose it as the
 Wii Remote's extension); for its stylus to move while the window is in the background, turn on
-background input. Tested in Dolphin 2609; not yet on a real uDraw.
+background input. Tested on a real uDraw GameTablet and in Dolphin 2609.
 
 The report format comes from WiiBrew and Dolphin's emulation of the tablet, with
 rvlpaint by cmyksoda as a working reference.
