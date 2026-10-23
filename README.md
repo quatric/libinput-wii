@@ -51,7 +51,8 @@ make WITH_MIC=1       # Wii Speak and USB microphones (input_wiispeak.h, input_u
 Each option can be combined with the others; every set of options builds into its own folder under
 `build/`, so switching them never mixes objects. Without an option its sources compile to nothing,
 and apps get link errors if they call into it. A library built with `WITH_TABLET=1` also has to be
-linked with `-Wl,--wrap=classic_ctrl_handshake,--wrap=parse_event` (see the uDraw section).
+linked with `-Wl,--wrap=classic_ctrl_handshake,--wrap=parse_event,--wrap=USB_GetDeviceList` (see the
+pen tablet and uDraw sections).
 
 ## Usage
 
@@ -150,7 +151,7 @@ IOS with `/dev/usb/oh0` or `/dev/usb/ven`. Not yet tested on real hardware.
 ```c
 #include <input_tablet.h>
 
-INPUT_InitEx(INPUT_INIT_NO_MOUSE);         /* see below */
+INPUT_Init();                              /* the USB mouse works alongside, see below */
 TB_Init();                                 /* finds the tablet, now or when plugged in */
 
 /* each frame: */
@@ -175,9 +176,13 @@ ignored while the pen is in range. `TB_GetInfo` gives the coordinate and pressur
 `TB_GetState` the latest sample, and `TB_GetStats` the raw last report, to help with a tablet that
 does not work.
 
-Some tablets also present themselves as a boot-protocol mouse, and libogc's mouse driver would then
-read the same interface and take some of the pen's reports. `INPUT_InitEx(INPUT_INIT_NO_MOUSE)` keeps
-it off. A read stays queued in IOS while the pen is away from the tablet, so apps should reload IOS
+Most tablets also present themselves as a boot-protocol mouse, and libogc's mouse driver opens the
+first one it finds: it could take the tablet instead of a real mouse, and steal the pen's reports.
+The link wrap `--wrap=USB_GetDeviceList` hides tablets from libogc's device lists (the makers'
+vendor IDs, and any device this driver has found to be a tablet), so its mouse and keyboard drivers
+only see the rest and a USB mouse works side by side with the tablet. The driver itself still sees
+everything, and remembers devices that are certainly not tablets so its scan, which repeats every
+second until a tablet turns up, stops opening them. A read stays queued in IOS while the pen is away from the tablet, so apps should reload IOS
 before returning to the loader, as `example/tablet` does.
 
 The descriptor parser (`source/libinput_hidparse.c`) has no libogc dependency and was checked on a
@@ -209,10 +214,10 @@ wiiuse knows nothing of the uDraw and would take it for a Classic Controller, so
 two of its functions with linker wraps. Apps that use it have to link with
 
 ```make
-LDFLAGS += -Wl,--wrap=classic_ctrl_handshake,--wrap=parse_event
+LDFLAGS += -Wl,--wrap=classic_ctrl_handshake,--wrap=parse_event,--wrap=USB_GetDeviceList
 ```
 
-or the link fails on `__real_parse_event`. The decoding is written against libogc 3.1's wiiuse
+or the link fails on `__real_parse_event` (the last wrap is the USB tablets', see above). The decoding is written against libogc 3.1's wiiuse
 (a warning shows up when building against another version).
 
 libogc's Bluetooth stack can drop an output report while reporting it sent, and wiiuse then waits
@@ -243,7 +248,7 @@ git submodule add https://github.com/quatric/libwiiinput.git libwiiinput
 SOURCES  += libwiiinput/source
 CFLAGS   += -Ilibwiiinput/include
 CFLAGS   += -DHAVE_TABLET -DHAVE_MIC     # only the drivers you use
-LDFLAGS  += -Wl,--wrap=classic_ctrl_handshake,--wrap=parse_event   # with HAVE_TABLET
+LDFLAGS  += -Wl,--wrap=classic_ctrl_handshake,--wrap=parse_event,--wrap=USB_GetDeviceList   # with HAVE_TABLET
 ```
 
 See `example/main.c` for a complete program.

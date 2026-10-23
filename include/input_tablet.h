@@ -12,12 +12,16 @@
  * after it is unplugged and plugged back in.
  *
  * The uDraw GameTablet, plugged into a Wii Remote, comes through the same
- * calls: its samples carry the Wii Remote's number in tb_sample.wiimote.  It
- * needs two linker wrappers in the app,
- *     -Wl,--wrap=classic_ctrl_handshake,--wrap=parse_event
- * as libogc's wiiuse would otherwise take it for a Classic Controller.  An
- * app built with HAVE_TABLET needs them even for USB tablets alone: without
- * them the link fails on __real_parse_event.
+ * calls: its samples carry the Wii Remote's number in tb_sample.wiimote.
+ *
+ * An app built with HAVE_TABLET links with three wrappers:
+ *     -Wl,--wrap=classic_ctrl_handshake,--wrap=parse_event,--wrap=USB_GetDeviceList
+ * The first two keep libogc's wiiuse from taking a uDraw for a Classic
+ * Controller.  The third hides tablets from libogc's USB mouse and keyboard
+ * drivers, so a USB mouse and a tablet work side by side (a tablet also
+ * presents a boot mouse, which libogc's driver would otherwise open instead
+ * of the real mouse, stealing the pen's reports).  Without them the link
+ * fails on __real_parse_event or __real_USB_GetDeviceList.
  *
  * Built only with HAVE_TABLET (make WITH_TABLET=1).
  */

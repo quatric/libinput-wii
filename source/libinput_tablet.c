@@ -54,6 +54,16 @@ static volatile bool tb_unplugged;
 static volatile bool tb_running;
 static volatile bool tb_exited;  /* the worker has returned */
 
+/* Devices sorted by the scan: tablets (hidden from libogc's mouse and
+ * keyboard drivers, see __wrap_USB_GetDeviceList) and devices that are
+ * certainly not tablets (left alone after the first look, so the scan that
+ * repeats every second doesn't keep opening the mouse and keyboard). */
+#define SEEN_MAX 16
+typedef struct { u16 vid, pid; } tb_id;
+static tb_id tb_tablets[SEEN_MAX], tb_others[SEEN_MAX];
+static int tb_ntablets, tb_nothers;
+static bool tb_probe_unsure; /* a descriptor couldn't be read or parsed */
+
 static tb_info tb_dev;
 static hidp_desc tb_desc;
 static hidp_pen tb_pen;
@@ -339,6 +349,7 @@ static bool probe_iface(const tb_iface *ifc)
 	              ifc->number, len, rdesc, 500);
 	if (ret <= 0) {
 		tb_log("  if %u: no report descriptor (%d)\n", ifc->number, (int)ret);
+		tb_probe_unsure = true;
 		return false;
 	}
 	if (ret > len)
@@ -346,6 +357,7 @@ static bool probe_iface(const tb_iface *ifc)
 	if (!hidp_parse(rdesc, (u32)ret, &tb_desc)) {
 		tb_log("  if %u: report descriptor unreadable (%d bytes)\n",
 		       ifc->number, (int)ret);
+		tb_probe_unsure = true;
 		return false;
 	}
 	if (hidp_find_pen(&tb_desc, &tb_pen)) {
@@ -407,6 +419,7 @@ static bool probe_device(u16 vid, u16 pid)
 	s32 ret;
 	int n, i, pick = -1;
 
+	tb_probe_unsure = true; /* until the descriptors are in */
 	ret = tb_ctrl(0x80, USB_REQ_GETDESCRIPTOR, USB_DT_DEVICE << 8, 0,
 	              sizeof(dev), dev, 300);
 	if (ret < 18) {
@@ -426,6 +439,7 @@ static bool probe_device(u16 vid, u16 pid)
 	if ((u32)ret < total)
 		total = (u16)ret;
 
+	tb_probe_unsure = false;
 	n = list_hid_ifaces(cfg, total, ifaces, MAX_IFACES);
 	for (i = 0; i < n; i++)
 		tb_log("  if %u: class 3/%u/%u ep %02x pkt %u rdesc %u\n",
@@ -601,6 +615,60 @@ static void place_pipes(const usb_device_entry *list, int count, int at)
 		open_touch(list, count, at);
 }
 
+/* ---- sharing the USB bus with libogc's mouse and keyboard ----------------- */
+
+static bool listed(const tb_id *ids, int n, u16 vid, u16 pid)
+{
+	int i;
+
+	for (i = 0; i < n; i++)
+		if (ids[i].vid == vid && ids[i].pid == pid)
+			return true;
+	return false;
+}
+
+static void remember(tb_id *ids, int *n, u16 vid, u16 pid)
+{
+	if (*n < SEEN_MAX && !listed(ids, *n, vid, pid)) {
+		ids[*n].vid = vid;
+		ids[*n].pid = pid;
+		(*n)++;
+	}
+}
+
+/* Pen tablet makers, for the tablets the scan hasn't looked at yet: Wacom,
+ * Huion and Gaomon, XP-Pen and UGEE, Veikk, UC-Logic, Waltop. */
+static bool tablet_vendor(u16 vid)
+{
+	return vid == WACOM_VID || vid == 0x256C || vid == 0x28BD || vid == 0x2FEB ||
+	       vid == 0x5543 || vid == 0x172F;
+}
+
+s32 __real_USB_GetDeviceList(usb_device_entry *list, u8 max, u8 cls, u8 *count);
+
+/* Most tablets also present a boot-protocol mouse, and libogc's mouse driver
+ * opens the first one it finds: with a tablet plugged in it could take the
+ * tablet instead of the mouse, and steal the pen's reports.  Linked with
+ * -Wl,--wrap=USB_GetDeviceList, every list libogc makes leaves tablets out,
+ * so its mouse and keyboard drivers only see the rest; this driver asks for
+ * the real list. */
+s32 __wrap_USB_GetDeviceList(usb_device_entry *list, u8 max, u8 cls, u8 *count)
+{
+	s32 ret = __real_USB_GetDeviceList(list, max, cls, count);
+	u8 i, kept = 0;
+
+	if (ret < 0 || !list || !count)
+		return ret;
+	for (i = 0; i < *count; i++) {
+		u16 vid = list[i].vid, pid = list[i].pid;
+		if (tablet_vendor(vid) || listed(tb_tablets, tb_ntablets, vid, pid))
+			continue;
+		list[kept++] = list[i];
+	}
+	*count = kept;
+	return ret;
+}
+
 /* Whether the pen's entry is still in the device list: a device that is
  * still listed was not unplugged, whatever the removal hook said. */
 static bool still_listed(void)
@@ -612,7 +680,7 @@ static bool still_listed(void)
 	if (tb_oh0)
 		return false;
 	memset(list, 0, sizeof(list));
-	if (USB_GetDeviceList(list, MAX_DEVICES, USB_CLASS_HID, &count) < 0)
+	if (__real_USB_GetDeviceList(list, MAX_DEVICES, USB_CLASS_HID, &count) < 0)
 		return false;
 	for (i = 0; i < count; i++)
 		if (list[i].device_id == tb_pen_id)
@@ -637,7 +705,7 @@ static s32 open_tablet(void)
 		IOS_Close(fd);
 
 	memset(list, 0, sizeof(list));
-	if (USB_GetDeviceList(list, MAX_DEVICES, USB_CLASS_HID, &count) < 0)
+	if (__real_USB_GetDeviceList(list, MAX_DEVICES, USB_CLASS_HID, &count) < 0)
 		return TB_ENODEV;
 	if (count != tb_last_count) {
 		tb_log("  IOS %d, %d HID device(s)\n", (int)IOS_GetVersion(), (int)count);
@@ -648,7 +716,8 @@ static s32 open_tablet(void)
 	for (i = 0; i < count; i++) {
 		u16 vid = list[i].vid, pid = list[i].pid;
 
-		if ((vid == 0 && pid == 0) || (vid == 0x057E && pid == 0x0308))
+		if ((vid == 0 && pid == 0) || (vid == 0x057E && pid == 0x0308) ||
+		    listed(tb_others, tb_nothers, vid, pid))
 			continue;
 
 		tb_unplugged = false;
@@ -662,12 +731,17 @@ static s32 open_tablet(void)
 			continue;
 
 		if (probe_device(vid, pid)) {
+			remember(tb_tablets, &tb_ntablets, vid, pid);
 			tb_opened = true;
 			place_pipes(list, count, i);
 			/* Only now: opening and closing entries sets off false removals. */
 			tb_unplugged = false;
 			USB_DeviceRemovalNotifyAsync(tb_fd, tb_removed_cb, NULL);
 			return TB_OK;
+		}
+		if (!tb_probe_unsure) {
+			remember(tb_others, &tb_nothers, vid, pid);
+			tb_log("  %04x:%04x is not a tablet, skipped from now on\n", vid, pid);
 		}
 		USB_CloseDevice(&tb_fd);
 		tb_fd = -1;

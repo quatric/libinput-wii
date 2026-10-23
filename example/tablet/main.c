@@ -748,7 +748,7 @@ int main(void)
 
 	/* No USB mouse: libogc's mouse driver would read the tablet too, if it
 	 * shows up as one, and steal half its reports. */
-	INPUT_InitEx(INPUT_INIT_NO_MOUSE);
+	INPUT_Init();
 	INPUT_SetScreenSize(fb_w, fb_h);
 	LWP_MutexInit(&log_lock, false);
 	TB_SetLog(mon_log);

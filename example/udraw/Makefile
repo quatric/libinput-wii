@@ -15,7 +15,7 @@ CFLAGS  := -O2 -Wall -Wextra -DGEKKO -DHW_RVL -mrvl -mcpu=750 -meabi -mhard-floa
            -DHAVE_TABLET -I$(LIB)/include -I$(LIB)/source -I$(LIBOGC)/include
 # wiiuse would take the tablet for a Classic Controller without these
 LDFLAGS := -mrvl -mcpu=750 -meabi -mhard-float -L$(LIBOGC)/lib/wii \
-           -Wl,--wrap=classic_ctrl_handshake,--wrap=parse_event
+           -Wl,--wrap=classic_ctrl_handshake,--wrap=parse_event,--wrap=USB_GetDeviceList
 LIBS    := -lfat -lwiikeyboard -lwiiuse -lbte -logc -lm
 BUILD   := build
 
